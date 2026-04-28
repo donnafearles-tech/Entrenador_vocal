@@ -1,12 +1,11 @@
 # app.py - Entrenador Vocal con Hume AI (API REST)
 import streamlit as st
 import os
-import numpy as np
-import matplotlib.pyplot as plt
 import requests
 import time
 import json
 import tempfile
+import plotly.graph_objects as go
 
 # ------------------------------------------------------------
 # Configuración de la página
@@ -88,13 +87,11 @@ def get_job_result(api_key, job_id):
     headers = {"X-Hume-Api-Key": api_key}
     
     while True:
-        # 1. Consultar el estado del trabajo
         response = requests.get(url_status, headers=headers)
         if response.status_code != 200:
             raise Exception(f"Error al obtener estado: {response.status_code}")
         
         data = response.json()
-        
         state = data.get("state") or data.get("status")
         if isinstance(state, dict):
             state = state.get("state") or state.get("status")
@@ -106,10 +103,8 @@ def get_job_result(api_key, job_id):
         state = state.lower()
         
         if state == "completed":
-            # 2. El trabajo terminó. Ahora pedimos las predicciones.
             pred_response = requests.get(url_predictions, headers=headers)
             if pred_response.status_code == 200:
-                # Retornamos el array de resultados envuelto en la clave "predictions"
                 return {"predictions": pred_response.json()}
             else:
                 raise Exception(f"Error al obtener predicciones: {pred_response.status_code}")
@@ -117,25 +112,21 @@ def get_job_result(api_key, job_id):
         elif state in ("failed", "cancelled"):
             raise Exception(f"El trabajo de Hume terminó con error o fue cancelado. Estado: {state}")
         else:
-            # Esperar antes de volver a consultar el estado
             time.sleep(2)
 
 def extract_emotion_scores(predictions_payload):
-    """Extrae puntuaciones promedio navegando la estructura oficial de Hume."""
     emotion_totals = {}
-    segment_count = 0  # Contamos segmentos, no emociones individuales
+    segment_count = 0  
     
     for item in predictions_payload:
-        # La estructura oficial es: item -> results -> predictions -> models -> prosody
         if "results" in item and "predictions" in item["results"]:
             for pred in item["results"]["predictions"]:
                 if "models" in pred and "prosody" in pred["models"]:
                     prosody = pred["models"]["prosody"]
-                    
                     if "grouped_predictions" in prosody:
                         for group in prosody["grouped_predictions"]:
                             for segment in group.get("predictions", []):
-                                segment_count += 1  # Sumamos 1 por cada segmento de voz
+                                segment_count += 1  
                                 for emo in segment.get("emotions", []):
                                     name = emo.get("name", "")
                                     score = emo.get("score", 0.0)
@@ -144,11 +135,10 @@ def extract_emotion_scores(predictions_payload):
     if segment_count == 0:
         return {}
         
-    # Dividimos el total de cada emoción entre la cantidad de segmentos reales
     return {name: total / segment_count for name, total in emotion_totals.items()}
 
 # ------------------------------------------------------------
-# Feedback y radar
+# Feedback y Visualización (Plotly y Kanban)
 # ------------------------------------------------------------
 def generar_feedback(scores, estilo):
     ideal = IDEAL_PROFILES[estilo]
@@ -158,44 +148,74 @@ def generar_feedback(scores, estilo):
         actual = scores.get(emocion, 0.0)
         diff = valor_objetivo - actual
         radar_data[emocion] = {"actual": actual, "target": valor_objetivo, "diff": diff}
+        
+        # Lógica de feedback basada en diferencias
         if diff > 0.15:
             if emocion == "Confidence":
-                feedback.append("🔴 **Confianza baja**: habla con más firmeza, evita terminar frases con tono ascendente (*uptalk*). Practica finales de frase descendentes.")
+                feedback.append("🔴 **Confianza baja**: habla con más firmeza, evita terminar frases con tono ascendente (*uptalk*).")
             elif emocion == "Excitement":
-                feedback.append("🔴 **Poca energía**: varía más el volumen y la velocidad. Imagina que cuentas una historia emocionante.")
+                feedback.append("🔴 **Poca energía**: varía más el volumen y la velocidad.")
             elif emocion == "Determination":
-                feedback.append("🔴 **Determinación baja**: enfatiza palabras clave con un leve aumento del volumen y un ritmo más pausado. Elimina muletillas como 'eh...'.")
+                feedback.append("🔴 **Determinación baja**: enfatiza palabras clave con un leve aumento del volumen.")
             elif emocion == "Calmness":
-                feedback.append("🔴 **Falta de calma (inseguridad)**: reduce la velocidad, haz pausas estratégicas y respira antes de empezar.")
+                feedback.append("🔴 **Falta de calma**: reduce la velocidad y respira antes de empezar.")
         elif diff < -0.15:
             if emocion == "Anxiety":
-                feedback.append("🟡 **Nerviosismo**: exhala lentamente antes de hablar y practica con un ritmo más relajado.")
+                feedback.append("🟡 **Nerviosismo**: exhala lentamente antes de hablar.")
             elif emocion == "Doubt":
-                feedback.append("🟡 **Dudas vocales**: elimina vacilaciones, alarga ligeramente las vocales de palabras importantes.")
+                feedback.append("🟡 **Dudas vocales**: elimina vacilaciones y muletillas.")
             elif emocion == "Anger" and estilo != "directa":
-                feedback.append("🟡 **Tono agresivo**: baja el volumen y añade más pausas. La persuasión suave suele ser más eficaz.")
+                feedback.append("🟡 **Tono agresivo**: baja el volumen y añade más pausas.")
+                
     if scores.get("Boredom", 0) > 0.4:
-        feedback.append("⚪ **Voz monótona**: practica exagerar las subidas y bajadas de tono mientras grabas.")
+        feedback.append("⚪ **Voz monótona**: practica exagerar las subidas y bajadas de tono.")
+        
     return feedback, radar_data
 
-def crear_radar(radar_data, estilo):
+def crear_radar_plotly(radar_data, estilo):
     etiquetas = list(radar_data.keys())
-    actuales = [v["actual"] for v in radar_data.values()]
-    objetivos = [v["target"] for v in radar_data.values()]
-    angulos = np.linspace(0, 2 * np.pi, len(etiquetas), endpoint=False).tolist()
-    actuales += actuales[:1]
-    objetivos += objetivos[:1]
-    angulos += angulos[:1]
-    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
-    ax.plot(angulos, actuales, 'o-', linewidth=2, label='Tu voz')
-    ax.fill(angulos, actuales, alpha=0.25)
-    ax.plot(angulos, objetivos, 'o-', linewidth=2, label=f'Ideal {estilo}')
-    ax.fill(angulos, objetivos, alpha=0.1)
-    ax.set_thetagrids(np.degrees(angulos[:-1]), etiquetas)
-    ax.set_ylim(0, 1)
-    ax.set_title(f'Perfil vocal para estilo "{estilo}"')
-    ax.legend(loc='upper right', bbox_to_anchor=(1.1, 1.1))
-    plt.tight_layout()
+    # Convertimos a porcentajes para el radar
+    actuales = [v["actual"] * 100 for v in radar_data.values()]
+    objetivos = [v["target"] * 100 for v in radar_data.values()]
+
+    # Cerramos el polígono repitiendo el primer valor al final
+    etiquetas.append(etiquetas[0])
+    actuales.append(actuales[0])
+    objetivos.append(objetivos[0])
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatterpolar(
+        r=actuales,
+        theta=etiquetas,
+        fill='toself',
+        name='Tu Voz',
+        line_color='blue',
+        text=[f"{v:.1f}%" for v in actuales],
+        hoverinfo="text+name"
+    ))
+
+    fig.add_trace(go.Scatterpolar(
+        r=objetivos,
+        theta=etiquetas,
+        fill='toself',
+        name=f'Ideal: {estilo}',
+        line_color='rgba(255, 165, 0, 0.7)',
+        text=[f"{v:.1f}%" for v in objetivos],
+        hoverinfo="text+name"
+    ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100],
+                ticksuffix="%"
+            )
+        ),
+        showlegend=True,
+        title=f'Perfil vocal interactivo - "{estilo.capitalize()}"'
+    )
     return fig
 
 # ------------------------------------------------------------
@@ -217,41 +237,81 @@ if archivo_subido is not None:
     st.audio(archivo_subido, format='audio/wav')
 
     if st.button("Analizar mi voz"):
-        with st.spinner("Analizando tu voz con Hume AI... Esto puede tardar unos segundos."):
+        with st.spinner("Analizando tu voz con Hume AI..."):
             try:
-                # 1. Iniciar job
                 job_id = start_job(api_key, audio_path)
-                st.text(f"Job ID: {job_id} (procesando...)")
-
-                # 2. Obtener resultados completos
                 results = get_job_result(api_key, job_id)
-
-                # Extraemos las predicciones 
                 predictions = results.get("predictions", [])
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
-                    st.error("No se pudieron extraer emociones del audio. Revisa el archivo subido.")
+                    st.error("No se pudieron extraer emociones del audio.")
                 else:
-                    st.success("✅ Análisis completado")
-
-                    st.subheader("📊 Emociones detectadas en tu voz")
-                    cols = st.columns(len(scores))
-                    for i, (emo, val) in enumerate(sorted(scores.items(), key=lambda x: x[1], reverse=True)):
-                        cols[i % 4].metric(label=emo, value=f"{val:.2f}")
-
-                    feedback, radar_data = generar_feedback(scores, estilo)
-                    st.subheader(f"🎯 Recomendaciones para sonar más {estilo}")
+                    st.success("✅ Análisis completado con éxito")
                     
+                    st.markdown("---")
+                    
+                    # --------------------------------------------------------
+                    # SECCIÓN KANBAN DE EMOCIONES
+                    # --------------------------------------------------------
+                    st.subheader("📋 Tablero Kanban de Emociones")
+                    st.markdown("Clasificación de tu tono de voz según la intensidad detectada.")
+                    
+                    # Ordenar emociones de mayor a menor
+                    sorted_emotions = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.markdown("### 🔴 Alta Intensidad\n*(>25%)*")
+                        for emo, val in sorted_emotions:
+                            if val >= 0.25:
+                                with st.container(border=True):
+                                    st.markdown(f"**{emo}**")
+                                    st.markdown(f"### {val*100:.1f}%")
+
+                    with col2:
+                        st.markdown("### 🟡 Media Intensidad\n*(10% - 25%)*")
+                        for emo, val in sorted_emotions:
+                            if 0.10 <= val < 0.25:
+                                with st.container(border=True):
+                                    st.markdown(f"**{emo}**")
+                                    st.markdown(f"### {val*100:.1f}%")
+
+                    with col3:
+                        st.markdown("### ⚪ Baja Intensidad\n*(<10%)*")
+                        # Solo mostramos las 5 más altas de este rango para no saturar la pantalla
+                        count = 0
+                        for emo, val in sorted_emotions:
+                            if val < 0.10 and count < 5:
+                                with st.container(border=True):
+                                    st.markdown(f"**{emo}**")
+                                    st.markdown(f"### {val*100:.1f}%")
+                                count += 1
+                        if len([e for e, v in sorted_emotions if v < 0.10]) > 5:
+                            st.caption("*... y otras emociones menores.*")
+                            
+                    st.markdown("---")
+
+                    # --------------------------------------------------------
+                    # SECCIÓN RADAR INTERACTIVO
+                    # --------------------------------------------------------
+                    st.subheader("📈 Radar Comparativo")
+                    feedback, radar_data = generar_feedback(scores, estilo)
+                    
+                    # Mostrar el gráfico de Plotly
+                    fig = crear_radar_plotly(radar_data, estilo)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # --------------------------------------------------------
+                    # SECCIÓN FEEDBACK
+                    # --------------------------------------------------------
+                    st.subheader(f"🎯 Recomendaciones para sonar más {estilo}")
                     if len(feedback) == 0:
-                        st.markdown("- ¡Excelente trabajo! Tu voz se ajusta muy bien al perfil seleccionado.")
+                        st.info("¡Excelente trabajo! Tu voz se ajusta muy bien al perfil seleccionado.")
                     else:
                         for rec in feedback:
                             st.markdown(f"- {rec}")
-
-                    st.subheader("📈 Comparación visual")
-                    fig = crear_radar(radar_data, estilo)
-                    st.pyplot(fig)
 
             except Exception as e:
                 st.error(f"Ocurrió un error durante el análisis: {str(e)}")
@@ -260,4 +320,3 @@ if archivo_subido is not None:
                     os.unlink(audio_path)
 else:
     st.info("👆 Sube un archivo de audio para comenzar")
-                                
