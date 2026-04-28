@@ -227,6 +227,7 @@ if archivo_subido is not None:
 
                 # Extraemos las predicciones 
                 predictions = results.get("predictions", [])
+                st.write("📦 Contenido real de 'predictions':", predictions)
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
