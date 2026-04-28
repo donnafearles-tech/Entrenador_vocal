@@ -198,6 +198,9 @@ if archivo_subido:
         audio_path = tmp.name
 
     st.audio(archivo_subido)
+    
+    tamano_mb = len(archivo_subido.getvalue()) / (1024 * 1024)
+    st.write(f"📦 Tamaño del archivo subido: {tamano_mb:.2f} MB")
 
     if st.button("Analizar ahora"):
         with st.spinner("Analizando matices vocales..."):
