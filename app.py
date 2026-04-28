@@ -234,6 +234,8 @@ if archivo_subido is not None:
                 results = get_job_result(api_key, job_id)
                 # La respuesta contiene "results" con las predicciones de cada archivo
                 predictions = results.get("predictions", [])
+                st.write("🧪 JSON de predicciones recibido:")
+st.json(predictions)
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
