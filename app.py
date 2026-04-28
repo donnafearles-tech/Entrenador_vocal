@@ -204,7 +204,8 @@ if archivo_subido:
             try:
                 job_id = start_job(api_key, audio_path)
                 results = get_job_result(api_key, job_id)
-                scores = extract_emotion_scores(results.get("predictions", []))
+                predictions = results.get("predictions", [])
+                scores = extract_emotion_scores(predictions)
 
                 if not scores:
                     st.error("No se detectó audio claro.")
@@ -216,6 +217,20 @@ if archivo_subido:
                         st.info(f"📊 **Confianza detectada:** {scores['Confianza']*100:.2f}%")
                     else:
                         st.warning("⚠️ Confianza no fue detectada (valor = 0.0)")
+
+                    # --- Diagnóstico de transcripción ---
+                    if predictions:
+                        try:
+                            # Navegar por la estructura para obtener el texto transcrito
+                            primer_resultado = predictions[0]
+                            modelos = primer_resultado["results"]["predictions"][0]["models"]
+                            if "transcription" in modelos:
+                                texto_transcrito = modelos["transcription"]["grouped_predictions"][0]["predictions"][0]["text"]
+                                st.info(f"📝 Texto transcrito por Hume: \"{texto_transcrito}\"")
+                            else:
+                                st.warning("No se encontró el modelo de transcripción en la respuesta.")
+                        except (KeyError, IndexError) as e:
+                            st.warning(f"No se pudo extraer la transcripción: {e}")
 
                     # Kanban
                     st.subheader("📋 Tablero de Intensidad Vocal")
