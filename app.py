@@ -79,7 +79,7 @@ def start_job(api_key, file_path):
     headers = {"X-Hume-Api-Key": api_key}
     with open(file_path, "rb") as f:
         files = {"file": f}
-        json_payload = json.dumps({"models": {"prosody": {}}})
+        json_payload = json.dumps({"models": {"prosody": {}, "transcription": {}}})
         data = {"json": json_payload}
         response = requests.post(HUME_BASE_URL, files=files, data=data, headers=headers)
     if response.status_code == 200:
