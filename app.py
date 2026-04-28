@@ -76,7 +76,7 @@ def start_job(api_key, file_path):
     headers = {"X-Hume-Api-Key": api_key}
     with open(file_path, "rb") as f:
         files = {"file": f}
-        # CORRECCIÓN: ahora la configuración de modelos va dentro del campo "json"
+        # La configuración de modelos va dentro del campo "json"
         json_payload = json.dumps({"models": {"prosody": {}}})
         data = {"json": json_payload}
         response = requests.post(HUME_BASE_URL, files=files, data=data, headers=headers)
@@ -85,7 +85,7 @@ def start_job(api_key, file_path):
     else:
         error_msg = f"Error {response.status_code}: {response.text}"
         raise Exception(error_msg)
-        
+
 def get_job_result(api_key, job_id):
     """Espera hasta que el job termine y devuelve las predicciones."""
     url = f"{HUME_BASE_URL}/{job_id}"
@@ -99,41 +99,33 @@ def get_job_result(api_key, job_id):
         # Intentamos obtener el estado de varias maneras posibles
         state = None
         if isinstance(data, dict):
-            # Opción 1: state está en el nivel raíz
             state = data.get("state")
-            # Opción 2: state está dentro de un objeto "job"
             if state is None and "job" in data:
                 job_data = data.get("job", {})
                 state = job_data.get("state")
-            # Opción 3: a veces la API antigua usa "status"
             if state is None:
                 state = data.get("status")
-        # Si después de todo no encontramos estado, lanzamos error con los datos crudos
         if state is None:
             raise Exception(f"No se pudo determinar el estado del job. Respuesta: {data}")
 
-        # Aseguramos que sea un string (por si acaso es un dict con un campo "status")
         if isinstance(state, dict):
             state = state.get("state", state.get("status", ""))
 
-        # Ahora sí podemos trabajar con el string
         status_lower = state.lower()
         if status_lower == "completed":
             return data.get("results", {})
         elif status_lower in ("failed", "cancelled"):
             raise Exception(f"El job finalizó con estado: {state}")
         else:
-            time.sleep(2)  # Sigue esperando
-            
+            time.sleep(2)
+
 def extract_emotion_scores(predictions_payload):
     """Extrae puntuaciones promedio de las predicciones de la API REST."""
     emotion_totals = {}
     count = 0
     for file_result in predictions_payload:
-        # La estructura correcta: file_result["models"]["prosody"]
         if "models" in file_result and "prosody" in file_result["models"]:
             prosody = file_result["models"]["prosody"]
-            # Dentro puede haber "grouped_predictions" o directamente "predictions"
             if "grouped_predictions" in prosody:
                 segments = []
                 for group in prosody["grouped_predictions"]:
@@ -153,9 +145,9 @@ def extract_emotion_scores(predictions_payload):
     if count == 0:
         return {}
     return {name: total/count for name, total in emotion_totals.items()}
-    
+
 # ------------------------------------------------------------
-# Funciones de feedback y radar (igual que antes)
+# Funciones de feedback y radar
 # ------------------------------------------------------------
 def generar_feedback(scores, estilo):
     ideal = IDEAL_PROFILES[estilo]
@@ -166,7 +158,7 @@ def generar_feedback(scores, estilo):
         diff = valor_objetivo - actual
         radar_data[emocion] = {"actual": actual, "target": valor_objetivo, "diff": diff}
         if diff > 0.15:
-            if emcion == "Confidence":
+            if emocion == "Confidence":
                 feedback.append("🔴 **Confianza baja**: habla con más firmeza, evita terminar frases con tono ascendente (*uptalk*). Practica finales de frase descendentes.")
             elif emocion == "Excitement":
                 feedback.append("🔴 **Poca energía**: varía más el volumen y la velocidad. Imagina que cuentas una historia emocionante.")
@@ -232,10 +224,12 @@ if archivo_subido is not None:
 
                 # 2. Obtener resultados
                 results = get_job_result(api_key, job_id)
-                # La respuesta contiene "results" con las predicciones de cada archivo
                 predictions = results.get("predictions", [])
+
+                # DEBUG: mostrar el JSON recibido para depurar la estructura
                 st.write("🧪 JSON de predicciones recibido:")
-st.json(predictions)
+                st.json(predictions)
+
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
