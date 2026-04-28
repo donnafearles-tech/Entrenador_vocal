@@ -1,0 +1,5 @@
+streamlit
+hume
+matplotlib
+numpy
+python-dotenv
