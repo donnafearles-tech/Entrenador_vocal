@@ -92,18 +92,39 @@ def get_job_result(api_key, job_id):
     headers = {"X-Hume-Api-Key": api_key}
     while True:
         response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            status = data.get("state", "").lower()
-            if status == "completed":
-                return data.get("results", {})
-            elif status in ("failed", "cancelled"):
-                raise Exception(f"El job finalizó con estado: {status}")
-            else:
-                time.sleep(2)  # Espera 2 segundos antes de volver a comprobar
-        else:
+        if response.status_code != 200:
             raise Exception(f"Error al obtener estado del job: {response.status_code} {response.text}")
 
+        data = response.json()
+        # Intentamos obtener el estado de varias maneras posibles
+        state = None
+        if isinstance(data, dict):
+            # Opción 1: state está en el nivel raíz
+            state = data.get("state")
+            # Opción 2: state está dentro de un objeto "job"
+            if state is None and "job" in data:
+                job_data = data.get("job", {})
+                state = job_data.get("state")
+            # Opción 3: a veces la API antigua usa "status"
+            if state is None:
+                state = data.get("status")
+        # Si después de todo no encontramos estado, lanzamos error con los datos crudos
+        if state is None:
+            raise Exception(f"No se pudo determinar el estado del job. Respuesta: {data}")
+
+        # Aseguramos que sea un string (por si acaso es un dict con un campo "status")
+        if isinstance(state, dict):
+            state = state.get("state", state.get("status", ""))
+
+        # Ahora sí podemos trabajar con el string
+        status_lower = state.lower()
+        if status_lower == "completed":
+            return data.get("results", {})
+        elif status_lower in ("failed", "cancelled"):
+            raise Exception(f"El job finalizó con estado: {state}")
+        else:
+            time.sleep(2)  # Sigue esperando
+            
 def extract_emotion_scores(predictions_payload):
     """Extrae puntuaciones promedio de las predicciones de la API REST."""
     emotion_totals = {}
