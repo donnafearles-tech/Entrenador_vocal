@@ -164,8 +164,15 @@ def crear_radar_plotly(radar_data, estilo):
         ),
         margin=dict(l=50, r=50, t=40, b=80), 
         height=500,
-        title=dict(text="Comparativa de Tono", x=0.5, xanchor='center')
+        title=dict(text="Comparativa de Tono", x=0.5, xanchor='center'),
+        dragmode="zoom",
+        hovermode="closest"
     )
+    
+    # Configurar interactividad del gráfico
+    fig.update_xaxes(showspikes=True, spikemode='across')
+    fig.update_yaxes(showspikes=True, spikemode='across')
+    
     return fig
 
 # ------------------------------------------------------------
@@ -219,12 +226,12 @@ if archivo_subido:
                     # Radar Centrado
                     st.markdown("---")
                     st.subheader("📈 Mapa de Perfil Vocal")
+                    st.markdown("💡 *Puedes hacer zoom en el gráfico: arrastra para zoom, usa la rueda del ratón o los botones de control.*")
                     radar_data = {e: {"actual": scores.get(e, 0.0), "target": v} for e, v in IDEAL_PROFILES[estilo].items()}
                     fig = crear_radar_plotly(radar_data, estilo)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
 
             except Exception as e:
                 st.error(f"Error: {e}")
             finally:
                 if os.path.exists(audio_path): os.unlink(audio_path)
-    
