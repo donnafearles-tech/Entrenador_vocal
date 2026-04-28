@@ -1,4 +1,4 @@
-# app.py - Entrenador Vocal con Hume AI (usando API REST, sin SDK)
+# app.py - Entrenador Vocal con Hume AI (API REST)
 import streamlit as st
 import os
 import numpy as np
@@ -16,22 +16,21 @@ st.title("🎤 Entrenador Vocal con Hume AI")
 st.markdown("Analiza la entonación, ritmo y tonalidad de tu voz para sonar más **persuasiva**, **directa** o **experta**.")
 
 # ------------------------------------------------------------
-# Obtener API Key desde secretos de Streamlit Cloud o variable de entorno local
+# Obtener API Key
 # ------------------------------------------------------------
 try:
     api_key = st.secrets["HUME_API_KEY"]
 except Exception:
-    # En local, se usa .env o variable de entorno
     from dotenv import load_dotenv
     load_dotenv()
     api_key = os.getenv("HUME_API_KEY", "")
 
 if not api_key:
-    st.error("🔑 No se encontró la API Key de Hume. Agrégala como secreto en Streamlit Cloud o en un archivo .env local.")
+    st.error("🔑 No se encontró la API Key de Hume.")
     st.stop()
 
 # ------------------------------------------------------------
-# Perfiles ideales (sin cambios)
+# Perfiles ideales
 # ------------------------------------------------------------
 IDEAL_PROFILES = {
     "persuasiva": {
@@ -72,58 +71,47 @@ IDEAL_PROFILES = {
 HUME_BASE_URL = "https://api.hume.ai/v0/batch/jobs"
 
 def start_job(api_key, file_path):
-    """Inicia un job de análisis de prosodia y devuelve el job_id."""
     headers = {"X-Hume-Api-Key": api_key}
     with open(file_path, "rb") as f:
         files = {"file": f}
-        # La configuración de modelos va dentro del campo "json"
         json_payload = json.dumps({"models": {"prosody": {}}})
         data = {"json": json_payload}
         response = requests.post(HUME_BASE_URL, files=files, data=data, headers=headers)
     if response.status_code == 200:
         return response.json()["job_id"]
     else:
-        error_msg = f"Error {response.status_code}: {response.text}"
-        raise Exception(error_msg)
+        raise Exception(f"Error {response.status_code}: {response.text}")
 
 def get_job_result(api_key, job_id):
-    """Espera hasta que el job termine y devuelve las predicciones."""
     url = f"{HUME_BASE_URL}/{job_id}"
     headers = {"X-Hume-Api-Key": api_key}
     while True:
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
-            raise Exception(f"Error al obtener estado del job: {response.status_code} {response.text}")
-
+            raise Exception(f"Error al obtener estado: {response.status_code}")
         data = response.json()
-        # Intentamos obtener el estado de varias maneras posibles
-        state = None
-        if isinstance(data, dict):
-            state = data.get("state")
-            if state is None and "job" in data:
-                job_data = data.get("job", {})
-                state = job_data.get("state")
-            if state is None:
-                state = data.get("status")
-        if state is None:
-            raise Exception(f"No se pudo determinar el estado del job. Respuesta: {data}")
-
+        # Obtener estado
+        state = data.get("state") or data.get("status")
         if isinstance(state, dict):
-            state = state.get("state", state.get("status", ""))
-
-        status_lower = state.lower()
-        if status_lower == "completed":
+            state = state.get("state") or state.get("status")
+        if state is None and "job" in data:
+            state = data["job"].get("state") or data["job"].get("status")
+        if state is None:
+            raise Exception(f"No se pudo determinar el estado. Respuesta: {data}")
+        state = state.lower()
+        if state == "completed":
             return data.get("results", {})
-        elif status_lower in ("failed", "cancelled"):
-            raise Exception(f"El job finalizó con estado: {state}")
+        elif state in ("failed", "cancelled"):
+            raise Exception(f"Job {state}")
         else:
             time.sleep(2)
 
 def extract_emotion_scores(predictions_payload):
-    """Extrae puntuaciones promedio de las predicciones de la API REST."""
+    """Extrae puntuaciones promedio. Soporta varias estructuras."""
     emotion_totals = {}
     count = 0
     for file_result in predictions_payload:
+        # Intento 1: file_result["models"]["prosody"]["grouped_predictions"]
         if "models" in file_result and "prosody" in file_result["models"]:
             prosody = file_result["models"]["prosody"]
             if "grouped_predictions" in prosody:
@@ -134,20 +122,35 @@ def extract_emotion_scores(predictions_payload):
                 segments = prosody["predictions"]
             else:
                 continue
-
             for seg in segments:
                 for emo in seg.get("emotions", []):
                     name = emo.get("name", "")
                     score = emo.get("score", 0.0)
                     emotion_totals[name] = emotion_totals.get(name, 0.0) + score
                     count += 1
-
+        # Intento 2: estructura plana con "emotions" en el nivel superior
+        elif "emotions" in file_result:
+            for emo in file_result["emotions"]:
+                name = emo.get("name", "")
+                score = emo.get("score", 0.0)
+                emotion_totals[name] = emotion_totals.get(name, 0.0) + score
+                count += 1
+        # Intento 3: a veces las predicciones están dentro de "predictions" anidadas
+        elif "predictions" in file_result:
+            for pred in file_result["predictions"]:
+                if isinstance(pred, dict):
+                    if "emotions" in pred:
+                        for emo in pred["emotions"]:
+                            name = emo.get("name", "")
+                            score = emo.get("score", 0.0)
+                            emotion_totals[name] = emotion_totals.get(name, 0.0) + score
+                            count += 1
     if count == 0:
         return {}
     return {name: total/count for name, total in emotion_totals.items()}
 
 # ------------------------------------------------------------
-# Funciones de feedback y radar
+# Feedback y radar
 # ------------------------------------------------------------
 def generar_feedback(scores, estilo):
     ideal = IDEAL_PROFILES[estilo]
@@ -222,34 +225,44 @@ if archivo_subido is not None:
                 job_id = start_job(api_key, audio_path)
                 st.text(f"Job ID: {job_id} (procesando...)")
 
-                # 2. Obtener resultados
+                # 2. Obtener resultados completos
                 results = get_job_result(api_key, job_id)
-                predictions = results.get("predictions", [])
 
-                # DEBUG: mostrar el JSON recibido para depurar la estructura
-                st.write("🧪 JSON de predicciones recibido:")
-                st.json(predictions)
+                # DEBUG: mostrar todo el objeto results (la clave está aquí)
+                st.write("🧪 **Objeto 'results' completo:**")
+                st.json(results)
+
+                # Extraemos las predicciones reales de la estructura correcta.
+                # En algunos casos la lista de archivos procesados está en "predictions",
+                # pero si está vacía puede estar en "files" o dentro de "predictions" anidadas.
+                predictions = results.get("predictions", [])
+                if not predictions:
+                    # Intentar otras rutas
+                    if "files" in results:
+                        predictions = results["files"]
+                    elif "data" in results:
+                        predictions = results["data"]
+                    elif isinstance(results, list) and len(results) > 0:
+                        # Por si results es directamente la lista
+                        predictions = results
 
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
-                    st.error("No se pudieron extraer emociones del audio. Verifica que el archivo tenga voz clara.")
+                    st.error("No se pudieron extraer emociones del audio. Revisa el JSON de arriba para ver la estructura.")
                 else:
                     st.success("✅ Análisis completado")
 
-                    # Mostrar scores
                     st.subheader("📊 Emociones detectadas en tu voz")
                     cols = st.columns(len(scores))
                     for i, (emo, val) in enumerate(sorted(scores.items(), key=lambda x: x[1], reverse=True)):
                         cols[i % 4].metric(label=emo, value=f"{val:.2f}")
 
-                    # Recomendaciones
                     feedback, radar_data = generar_feedback(scores, estilo)
                     st.subheader(f"🎯 Recomendaciones para sonar más {estilo}")
                     for rec in feedback:
                         st.markdown(f"- {rec}")
 
-                    # Gráfico radar
                     st.subheader("📈 Comparación visual")
                     fig = crear_radar(radar_data, estilo)
                     st.pyplot(fig)
