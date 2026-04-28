@@ -127,6 +127,7 @@ def extract_emotion_scores(predictions_payload):
                             segment_count += 1
                             for emo in segment.get("emotions", []):
                                 eng_name = emo.get("name", "")
+                                st.write(f"Emoción original: {eng_name} -> {emo.get('score', 0.0)}")
                                 esp_name = TRADUCCION_EMOCIONES.get(eng_name, eng_name)
                                 score = emo.get("score", 0.0)
                                 emotion_totals[esp_name] = emotion_totals.get(esp_name, 0.0) + score
