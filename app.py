@@ -50,7 +50,7 @@ if not api_key:
     st.stop()
 
 # ------------------------------------------------------------
-# Perfiles ideales (Ahora con nombres en español para coincidir con el radar)
+# Perfiles ideales
 # ------------------------------------------------------------
 IDEAL_PROFILES = {
     "persuasiva": {
@@ -91,14 +91,28 @@ def get_job_result(api_key, job_id):
     url_status = f"{HUME_BASE_URL}/{job_id}"
     url_predictions = f"{HUME_BASE_URL}/{job_id}/predictions"
     headers = {"X-Hume-Api-Key": api_key}
+    
     while True:
         res = requests.get(url_status, headers=headers)
-        state = res.json().get("state", "").lower()
+        data = res.json()
+        
+        # Extracción segura del estado
+        state = data.get("state") or data.get("status")
+        if isinstance(state, dict):
+            state = state.get("status") or state.get("state", "")
+            
+        if state is None and "job" in data:
+            state = data["job"].get("state") or data["job"].get("status", "")
+            
+        # Convertimos a string de forma segura antes de minúsculas
+        state = str(state).lower()
+        
         if state == "completed":
             pred_res = requests.get(url_predictions, headers=headers)
             return {"predictions": pred_res.json()}
         elif state in ("failed", "cancelled"):
             raise Exception(f"Error en el Job: {state}")
+            
         time.sleep(2)
 
 def extract_emotion_scores(predictions_payload):
@@ -144,11 +158,11 @@ def crear_radar_plotly(radar_data, estilo):
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.25, # Posición inferior fuera del gráfico
+            y=-0.25, 
             xanchor="center",
             x=0.5
         ),
-        margin=dict(l=50, r=50, t=40, b=80), # Márgenes generosos para evitar cortes en móvil
+        margin=dict(l=50, r=50, t=40, b=80), 
         height=500,
         title=dict(text="Comparativa de Tono", x=0.5, xanchor='center')
     )
@@ -198,7 +212,7 @@ if archivo_subido:
                                 with st.container(border=True): st.markdown(f"**{e}**\n### {v*100:.1f}%")
                     with c3:
                         st.markdown("### ⚪ Baja")
-                        for e, v in sorted_emotions[:15]: # Limitamos para no saturar
+                        for e, v in sorted_emotions[:15]: 
                             if v < 0.10:
                                 with st.container(border=True): st.markdown(f"**{e}**\n### {v*100:.1f}%")
 
@@ -213,3 +227,4 @@ if archivo_subido:
                 st.error(f"Error: {e}")
             finally:
                 if os.path.exists(audio_path): os.unlink(audio_path)
+    
