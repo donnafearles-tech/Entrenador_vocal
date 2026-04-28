@@ -83,14 +83,18 @@ def start_job(api_key, file_path):
         raise Exception(f"Error {response.status_code}: {response.text}")
 
 def get_job_result(api_key, job_id):
-    url = f"{HUME_BASE_URL}/{job_id}"
+    url_status = f"{HUME_BASE_URL}/{job_id}"
+    url_predictions = f"{HUME_BASE_URL}/{job_id}/predictions"
     headers = {"X-Hume-Api-Key": api_key}
+    
     while True:
-        response = requests.get(url, headers=headers)
+        # 1. Consultar el estado del trabajo
+        response = requests.get(url_status, headers=headers)
         if response.status_code != 200:
             raise Exception(f"Error al obtener estado: {response.status_code}")
+        
         data = response.json()
-        # Obtener estado
+        
         state = data.get("state") or data.get("status")
         if isinstance(state, dict):
             state = state.get("state") or state.get("status")
@@ -98,55 +102,48 @@ def get_job_result(api_key, job_id):
             state = data["job"].get("state") or data["job"].get("status")
         if state is None:
             raise Exception(f"No se pudo determinar el estado. Respuesta: {data}")
+            
         state = state.lower()
+        
         if state == "completed":
-            return data.get("results", {})
+            # 2. El trabajo terminó. Ahora pedimos las predicciones.
+            pred_response = requests.get(url_predictions, headers=headers)
+            if pred_response.status_code == 200:
+                # Retornamos el array de resultados envuelto en la clave "predictions"
+                return {"predictions": pred_response.json()}
+            else:
+                raise Exception(f"Error al obtener predicciones: {pred_response.status_code}")
+                
         elif state in ("failed", "cancelled"):
-            raise Exception(f"Job {state}")
+            raise Exception(f"El trabajo de Hume terminó con error o fue cancelado. Estado: {state}")
         else:
+            # Esperar antes de volver a consultar el estado
             time.sleep(2)
 
 def extract_emotion_scores(predictions_payload):
-    """Extrae puntuaciones promedio. Soporta varias estructuras."""
+    """Extrae puntuaciones promedio navegando la estructura oficial de Hume."""
     emotion_totals = {}
     count = 0
-    for file_result in predictions_payload:
-        # Intento 1: file_result["models"]["prosody"]["grouped_predictions"]
-        if "models" in file_result and "prosody" in file_result["models"]:
-            prosody = file_result["models"]["prosody"]
-            if "grouped_predictions" in prosody:
-                segments = []
-                for group in prosody["grouped_predictions"]:
-                    segments.extend(group.get("predictions", []))
-            elif "predictions" in prosody:
-                segments = prosody["predictions"]
-            else:
-                continue
-            for seg in segments:
-                for emo in seg.get("emotions", []):
-                    name = emo.get("name", "")
-                    score = emo.get("score", 0.0)
-                    emotion_totals[name] = emotion_totals.get(name, 0.0) + score
-                    count += 1
-        # Intento 2: estructura plana con "emotions" en el nivel superior
-        elif "emotions" in file_result:
-            for emo in file_result["emotions"]:
-                name = emo.get("name", "")
-                score = emo.get("score", 0.0)
-                emotion_totals[name] = emotion_totals.get(name, 0.0) + score
-                count += 1
-        # Intento 3: a veces las predicciones están dentro de "predictions" anidadas
-        elif "predictions" in file_result:
-            for pred in file_result["predictions"]:
-                if isinstance(pred, dict):
-                    if "emotions" in pred:
-                        for emo in pred["emotions"]:
-                            name = emo.get("name", "")
-                            score = emo.get("score", 0.0)
-                            emotion_totals[name] = emotion_totals.get(name, 0.0) + score
-                            count += 1
+    
+    for item in predictions_payload:
+        # La estructura oficial es: item -> results -> predictions -> models -> prosody
+        if "results" in item and "predictions" in item["results"]:
+            for pred in item["results"]["predictions"]:
+                if "models" in pred and "prosody" in pred["models"]:
+                    prosody = pred["models"]["prosody"]
+                    
+                    if "grouped_predictions" in prosody:
+                        for group in prosody["grouped_predictions"]:
+                            for segment in group.get("predictions", []):
+                                for emo in segment.get("emotions", []):
+                                    name = emo.get("name", "")
+                                    score = emo.get("score", 0.0)
+                                    emotion_totals[name] = emotion_totals.get(name, 0.0) + score
+                                    count += 1
+                                    
     if count == 0:
         return {}
+        
     return {name: total/count for name, total in emotion_totals.items()}
 
 # ------------------------------------------------------------
@@ -228,28 +225,12 @@ if archivo_subido is not None:
                 # 2. Obtener resultados completos
                 results = get_job_result(api_key, job_id)
 
-                # DEBUG: mostrar todo el objeto results (la clave está aquí)
-                st.write("🧪 **Objeto 'results' completo:**")
-                st.json(results)
-
-                # Extraemos las predicciones reales de la estructura correcta.
-                # En algunos casos la lista de archivos procesados está en "predictions",
-                # pero si está vacía puede estar en "files" o dentro de "predictions" anidadas.
+                # Extraemos las predicciones 
                 predictions = results.get("predictions", [])
-                if not predictions:
-                    # Intentar otras rutas
-                    if "files" in results:
-                        predictions = results["files"]
-                    elif "data" in results:
-                        predictions = results["data"]
-                    elif isinstance(results, list) and len(results) > 0:
-                        # Por si results es directamente la lista
-                        predictions = results
-
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
-                    st.error("No se pudieron extraer emociones del audio. Revisa el JSON de arriba para ver la estructura.")
+                    st.error("No se pudieron extraer emociones del audio. Revisa el archivo subido.")
                 else:
                     st.success("✅ Análisis completado")
 
@@ -260,8 +241,12 @@ if archivo_subido is not None:
 
                     feedback, radar_data = generar_feedback(scores, estilo)
                     st.subheader(f"🎯 Recomendaciones para sonar más {estilo}")
-                    for rec in feedback:
-                        st.markdown(f"- {rec}")
+                    
+                    if len(feedback) == 0:
+                        st.markdown("- ¡Excelente trabajo! Tu voz se ajusta muy bien al perfil seleccionado.")
+                    else:
+                        for rec in feedback:
+                            st.markdown(f"- {rec}")
 
                     st.subheader("📈 Comparación visual")
                     fig = crear_radar(radar_data, estilo)
@@ -270,6 +255,7 @@ if archivo_subido is not None:
             except Exception as e:
                 st.error(f"Ocurrió un error durante el análisis: {str(e)}")
             finally:
-                os.unlink(audio_path)
+                if os.path.exists(audio_path):
+                    os.unlink(audio_path)
 else:
     st.info("👆 Sube un archivo de audio para comenzar")
