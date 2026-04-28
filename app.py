@@ -1,4 +1,4 @@
-# app.py - Entrenador Vocal con Hume AI (versión final robusta)
+# app.py - Entrenador Vocal con Hume AI (API REST)
 import streamlit as st
 import os
 import numpy as np
@@ -8,6 +8,9 @@ import time
 import json
 import tempfile
 
+# ------------------------------------------------------------
+# Configuración de la página
+# ------------------------------------------------------------
 st.set_page_config(page_title="Entrenador Vocal", page_icon="🎤", layout="wide")
 st.title("🎤 Entrenador Vocal con Hume AI")
 st.markdown("Analiza la entonación, ritmo y tonalidad de tu voz para sonar más **persuasiva**, **directa** o **experta**.")
@@ -31,19 +34,34 @@ if not api_key:
 # ------------------------------------------------------------
 IDEAL_PROFILES = {
     "persuasiva": {
-        "Confidence": 0.85, "Excitement": 0.65, "Joy": 0.60,
-        "Calmness": 0.50, "Determination": 0.75, "Doubt": 0.05,
-        "Anxiety": 0.10, "Contemplation": 0.30
+        "Confidence": 0.85,
+        "Excitement": 0.65,
+        "Joy": 0.60,
+        "Calmness": 0.50,
+        "Determination": 0.75,
+        "Doubt": 0.05,
+        "Anxiety": 0.10,
+        "Contemplation": 0.30
     },
     "directa": {
-        "Confidence": 0.80, "Determination": 0.90, "Anger": 0.25,
-        "Calmness": 0.60, "Doubt": 0.05, "Anxiety": 0.10,
-        "Excitement": 0.40, "Contemplation": 0.20
+        "Confidence": 0.80,
+        "Determination": 0.90,
+        "Anger": 0.25,
+        "Calmness": 0.60,
+        "Doubt": 0.05,
+        "Anxiety": 0.10,
+        "Excitement": 0.40,
+        "Contemplation": 0.20
     },
     "experta": {
-        "Confidence": 0.90, "Calmness": 0.70, "Concentration": 0.60,
-        "Contemplation": 0.50, "Doubt": 0.00, "Anxiety": 0.05,
-        "Excitement": 0.30, "Determination": 0.70
+        "Confidence": 0.90,
+        "Calmness": 0.70,
+        "Concentration": 0.60,
+        "Contemplation": 0.50,
+        "Doubt": 0.00,
+        "Anxiety": 0.05,
+        "Excitement": 0.30,
+        "Determination": 0.70
     }
 }
 
@@ -68,11 +86,15 @@ def get_job_result(api_key, job_id):
     url_status = f"{HUME_BASE_URL}/{job_id}"
     url_predictions = f"{HUME_BASE_URL}/{job_id}/predictions"
     headers = {"X-Hume-Api-Key": api_key}
+    
     while True:
+        # 1. Consultar el estado del trabajo
         response = requests.get(url_status, headers=headers)
         if response.status_code != 200:
             raise Exception(f"Error al obtener estado: {response.status_code}")
+        
         data = response.json()
+        
         state = data.get("state") or data.get("status")
         if isinstance(state, dict):
             state = state.get("state") or state.get("status")
@@ -80,41 +102,50 @@ def get_job_result(api_key, job_id):
             state = data["job"].get("state") or data["job"].get("status")
         if state is None:
             raise Exception(f"No se pudo determinar el estado. Respuesta: {data}")
+            
         state = state.lower()
+        
         if state == "completed":
+            # 2. El trabajo terminó. Ahora pedimos las predicciones.
             pred_response = requests.get(url_predictions, headers=headers)
             if pred_response.status_code == 200:
+                # Retornamos el array de resultados envuelto en la clave "predictions"
                 return {"predictions": pred_response.json()}
             else:
                 raise Exception(f"Error al obtener predicciones: {pred_response.status_code}")
+                
         elif state in ("failed", "cancelled"):
-            raise Exception(f"El trabajo terminó con error o fue cancelado. Estado: {state}")
+            raise Exception(f"El trabajo de Hume terminó con error o fue cancelado. Estado: {state}")
         else:
+            # Esperar antes de volver a consultar el estado
             time.sleep(2)
 
 def extract_emotion_scores(predictions_payload):
-    """Busca recursivamente todas las emociones en la estructura JSON."""
+    """Extrae puntuaciones promedio navegando la estructura oficial de Hume."""
     emotion_totals = {}
-    count = 0
-    def buscar_emociones(obj):
-        nonlocal count
-        if isinstance(obj, dict):
-            if "emotions" in obj:
-                for emo in obj["emotions"]:
-                    name = emo.get("name", "")
-                    score = emo.get("score", 0.0)
-                    if name and score > 0:
-                        emotion_totals[name] = emotion_totals.get(name, 0.0) + score
-                        count += 1
-            for value in obj.values():
-                buscar_emociones(value)
-        elif isinstance(obj, list):
-            for item in obj:
-                buscar_emociones(item)
-    buscar_emociones(predictions_payload)
-    if count == 0:
+    segment_count = 0  # Contamos segmentos, no emociones individuales
+    
+    for item in predictions_payload:
+        # La estructura oficial es: item -> results -> predictions -> models -> prosody
+        if "results" in item and "predictions" in item["results"]:
+            for pred in item["results"]["predictions"]:
+                if "models" in pred and "prosody" in pred["models"]:
+                    prosody = pred["models"]["prosody"]
+                    
+                    if "grouped_predictions" in prosody:
+                        for group in prosody["grouped_predictions"]:
+                            for segment in group.get("predictions", []):
+                                segment_count += 1  # Sumamos 1 por cada segmento de voz
+                                for emo in segment.get("emotions", []):
+                                    name = emo.get("name", "")
+                                    score = emo.get("score", 0.0)
+                                    emotion_totals[name] = emotion_totals.get(name, 0.0) + score
+                                    
+    if segment_count == 0:
         return {}
-    return {name: total/count for name, total in emotion_totals.items()}
+        
+    # Dividimos el total de cada emoción entre la cantidad de segmentos reales
+    return {name: total / segment_count for name, total in emotion_totals.items()}
 
 # ------------------------------------------------------------
 # Feedback y radar
@@ -171,7 +202,11 @@ def crear_radar(radar_data, estilo):
 # Interfaz de Streamlit
 # ------------------------------------------------------------
 st.sidebar.header("Configuración")
-estilo = st.sidebar.selectbox("¿Qué estilo quieres practicar?", ("persuasiva", "directa", "experta"))
+estilo = st.sidebar.selectbox(
+    "¿Qué estilo quieres practicar?",
+    ("persuasiva", "directa", "experta")
+)
+
 archivo_subido = st.file_uploader("Sube tu grabación de voz (formato WAV o MP3)", type=["wav", "mp3"])
 
 if archivo_subido is not None:
@@ -184,16 +219,22 @@ if archivo_subido is not None:
     if st.button("Analizar mi voz"):
         with st.spinner("Analizando tu voz con Hume AI... Esto puede tardar unos segundos."):
             try:
+                # 1. Iniciar job
                 job_id = start_job(api_key, audio_path)
                 st.text(f"Job ID: {job_id} (procesando...)")
+
+                # 2. Obtener resultados completos
                 results = get_job_result(api_key, job_id)
+
+                # Extraemos las predicciones 
                 predictions = results.get("predictions", [])
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
-                    st.error("No se pudieron extraer emociones del audio. Revisa que el archivo contenga voz clara.")
+                    st.error("No se pudieron extraer emociones del audio. Revisa el archivo subido.")
                 else:
                     st.success("✅ Análisis completado")
+
                     st.subheader("📊 Emociones detectadas en tu voz")
                     cols = st.columns(len(scores))
                     for i, (emo, val) in enumerate(sorted(scores.items(), key=lambda x: x[1], reverse=True)):
@@ -201,6 +242,7 @@ if archivo_subido is not None:
 
                     feedback, radar_data = generar_feedback(scores, estilo)
                     st.subheader(f"🎯 Recomendaciones para sonar más {estilo}")
+                    
                     if len(feedback) == 0:
                         st.markdown("- ¡Excelente trabajo! Tu voz se ajusta muy bien al perfil seleccionado.")
                     else:
@@ -218,3 +260,4 @@ if archivo_subido is not None:
                     os.unlink(audio_path)
 else:
     st.info("👆 Sube un archivo de audio para comenzar")
+                                
