@@ -210,6 +210,12 @@ if archivo_subido:
                     st.error("No se detectó audio claro.")
                 else:
                     st.success("✅ Análisis completado")
+                    
+                    # Mostrar depuración de confianza AQUÍ, claramente visible
+                    if "Confianza" in scores:
+                        st.info(f"📊 **Confianza detectada:** {scores['Confianza']*100:.2f}%")
+                    else:
+                        st.warning("⚠️ Confianza no fue detectada (valor = 0.0)")
 
                     # Kanban
                     st.subheader("📋 Tablero de Intensidad Vocal")
