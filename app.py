@@ -1,48 +1,37 @@
-# app.py - Entrenador Vocal con Streamlit y Hume AI
+# app.py - Entrenador Vocal con Hume AI (usando API REST, sin SDK)
 import streamlit as st
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from dotenv import load_dotenv
-from hume import HumeClient
+import requests
+import time
+import json
 import tempfile
 
 # ------------------------------------------------------------
-# Importación robusta de ProsodyConfig
-# ------------------------------------------------------------
-ProsodyConfig = None
-try:
-    from hume.expression_measurement import ProsodyConfig
-except ImportError:
-    try:
-        from hume.models.config import ProsodyConfig
-    except ImportError:
-        try:
-            from hume.expression_measurement.batch import ProsodyConfig
-        except ImportError:
-            st.error("No se pudo importar ProsodyConfig. Revisa la instalación de 'hume'.")
-            st.stop()
-
-# ------------------------------------------------------------
-# Configuración inicial de la página
+# Configuración de la página
 # ------------------------------------------------------------
 st.set_page_config(page_title="Entrenador Vocal", page_icon="🎤", layout="wide")
 st.title("🎤 Entrenador Vocal con Hume AI")
 st.markdown("Analiza la entonación, ritmo y tonalidad de tu voz para sonar más **persuasiva**, **directa** o **experta**.")
 
 # ------------------------------------------------------------
-# Carga de API Key
+# Obtener API Key desde secretos de Streamlit Cloud o variable de entorno local
 # ------------------------------------------------------------
-load_dotenv()
-api_key = os.getenv("HUME_API_KEY")
+try:
+    api_key = st.secrets["HUME_API_KEY"]
+except Exception:
+    # En local, se usa .env o variable de entorno
+    from dotenv import load_dotenv
+    load_dotenv()
+    api_key = os.getenv("HUME_API_KEY", "")
+
 if not api_key:
-    api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Hume", type="password")
-    if not api_key:
-        st.sidebar.warning("Necesitas una API Key para usar la aplicación.")
-        st.stop()
+    st.error("🔑 No se encontró la API Key de Hume. Agrégala como secreto en Streamlit Cloud o en un archivo .env local.")
+    st.stop()
 
 # ------------------------------------------------------------
-# Perfiles ideales (los mismos de antes)
+# Perfiles ideales (sin cambios)
 # ------------------------------------------------------------
 IDEAL_PROFILES = {
     "persuasiva": {
@@ -78,63 +67,64 @@ IDEAL_PROFILES = {
 }
 
 # ------------------------------------------------------------
-# Función para extraer emociones (la misma versión robusta)
+# Funciones para la API REST de Hume
 # ------------------------------------------------------------
-def extract_emotion_scores(predictions):
+HUME_BASE_URL = "https://api.hume.ai/v0/batch/jobs"
+
+def start_job(api_key, file_path):
+    """Inicia un job de análisis de prosodia y devuelve el job_id."""
+    headers = {"X-Hume-Api-Key": api_key}
+    with open(file_path, "rb") as f:
+        files = {"file": f}
+        models = json.dumps({"prosody": {}})
+        data = {"models": models}
+        response = requests.post(HUME_BASE_URL, files=files, data=data, headers=headers)
+    if response.status_code == 200:
+        return response.json()["job_id"]
+    else:
+        raise Exception(f"Error al iniciar job: {response.status_code} {response.text}")
+
+def get_job_result(api_key, job_id):
+    """Espera hasta que el job termine y devuelve las predicciones."""
+    url = f"{HUME_BASE_URL}/{job_id}"
+    headers = {"X-Hume-Api-Key": api_key}
+    while True:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            status = data.get("state", "").lower()
+            if status == "completed":
+                return data.get("results", {})
+            elif status in ("failed", "cancelled"):
+                raise Exception(f"El job finalizó con estado: {status}")
+            else:
+                time.sleep(2)  # Espera 2 segundos antes de volver a comprobar
+        else:
+            raise Exception(f"Error al obtener estado del job: {response.status_code} {response.text}")
+
+def extract_emotion_scores(predictions_payload):
+    """Extrae puntuaciones promedio de las predicciones de la API REST."""
     emotion_totals = {}
     count = 0
-    for file_pred in predictions:
-        # Intento 1: objetos con .models.prosody.grouped_predictions
-        try:
-            grouped = file_pred.models.prosody.grouped_predictions
-            for group in grouped:
-                for pred in group.predictions:
-                    for emotion in pred.emotions:
-                        name = emotion.name
-                        emotion_totals[name] = emotion_totals.get(name, 0.0) + emotion.score
-                        count += 1
-            continue
-        except AttributeError:
-            pass
-        # Intento 2: diccionario
-        try:
-            if isinstance(file_pred, dict):
-                data = file_pred['results']['predictions'][0]['models']['prosody']['grouped_predictions']
-            else:
-                data = file_pred.results['predictions'][0]['models']['prosody']['grouped_predictions']
-            for group in data:
-                for seg in group.get('predictions', []):
-                    for emotion in seg.get('emotions', []):
-                        name = emotion.get('name') or emotion.name
-                        score = emotion.get('score', 0) or emotion.score
-                        emotion_totals[name] = emotion_totals.get(name, 0.0) + score
-                        count += 1
-            continue
-        except (AttributeError, KeyError, TypeError):
-            pass
-        # Intento 3: estructura plana
-        try:
-            for segment in file_pred.predictions:
-                if hasattr(segment, 'emotions'):
-                    for emotion in segment.emotions:
-                        name = emotion.name
-                        emotion_totals[name] = emotion_totals.get(name, 0.0) + emotion.score
-                        count += 1
-                elif isinstance(segment, dict) and 'emotions' in segment:
-                    for emotion in segment['emotions']:
-                        name = emotion['name']
-                        emotion_totals[name] = emotion_totals.get(name, 0.0) + emotion['score']
-                        count += 1
-            continue
-        except AttributeError:
-            pass
-        st.warning(f"No se pudo extraer emociones de un segmento de tipo {type(file_pred)}")
+    # Estructura: predictions es una lista de archivos procesados
+    for file_result in predictions_payload:
+        # Cada archivo tiene una lista de modelos (en nuestro caso "prosody")
+        if "prosody" in file_result:
+            prosody = file_result["prosody"]
+            # Los resultados vienen en una lista "predictions" dentro del modelo
+            for pred in prosody.get("predictions", []):
+                # Dentro de cada predicción hay una lista de "emotions"
+                for emo in pred.get("emotions", []):
+                    name = emo.get("name", "")
+                    score = emo.get("score", 0.0)
+                    emotion_totals[name] = emotion_totals.get(name, 0.0) + score
+                    count += 1
     if count == 0:
         return {}
     return {name: total/count for name, total in emotion_totals.items()}
 
 # ------------------------------------------------------------
-# Función para generar feedback (igual a la original)
+# Funciones de feedback y radar (igual que antes)
 # ------------------------------------------------------------
 def generar_feedback(scores, estilo):
     ideal = IDEAL_PROFILES[estilo]
@@ -164,9 +154,6 @@ def generar_feedback(scores, estilo):
         feedback.append("⚪ **Voz monótona**: practica exagerar las subidas y bajadas de tono mientras grabas.")
     return feedback, radar_data
 
-# ------------------------------------------------------------
-# Gráfico de radar (devuelve la figura)
-# ------------------------------------------------------------
 def crear_radar(radar_data, estilo):
     etiquetas = list(radar_data.keys())
     actuales = [v["actual"] for v in radar_data.values()]
@@ -188,7 +175,7 @@ def crear_radar(radar_data, estilo):
     return fig
 
 # ------------------------------------------------------------
-# Interfaz principal de Streamlit
+# Interfaz de Streamlit
 # ------------------------------------------------------------
 st.sidebar.header("Configuración")
 estilo = st.sidebar.selectbox(
@@ -199,7 +186,6 @@ estilo = st.sidebar.selectbox(
 archivo_subido = st.file_uploader("Sube tu grabación de voz (formato WAV o MP3)", type=["wav", "mp3"])
 
 if archivo_subido is not None:
-    # Guardar el archivo temporalmente
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
         tmp.write(archivo_subido.read())
         audio_path = tmp.name
@@ -209,13 +195,14 @@ if archivo_subido is not None:
     if st.button("Analizar mi voz"):
         with st.spinner("Analizando tu voz con Hume AI... Esto puede tardar unos segundos."):
             try:
-                client = HumeClient(api_key=api_key)
-                job = client.expression_measurement.batch.start_inference_job(
-                    files=[audio_path],
-                    models=[ProsodyConfig()]
-                )
-                result = job.await_complete()
-                predictions = result.get_predictions()
+                # 1. Iniciar job
+                job_id = start_job(api_key, audio_path)
+                st.text(f"Job ID: {job_id} (procesando...)")
+
+                # 2. Obtener resultados
+                results = get_job_result(api_key, job_id)
+                # La respuesta contiene "results" con las predicciones de cada archivo
+                predictions = results.get("predictions", [])
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
@@ -243,7 +230,6 @@ if archivo_subido is not None:
             except Exception as e:
                 st.error(f"Ocurrió un error durante el análisis: {str(e)}")
             finally:
-                # Limpiar archivo temporal
                 os.unlink(audio_path)
 else:
     st.info("👆 Sube un archivo de audio para comenzar")
