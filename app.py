@@ -129,23 +129,31 @@ def extract_emotion_scores(predictions_payload):
     """Extrae puntuaciones promedio de las predicciones de la API REST."""
     emotion_totals = {}
     count = 0
-    # Estructura: predictions es una lista de archivos procesados
     for file_result in predictions_payload:
-        # Cada archivo tiene una lista de modelos (en nuestro caso "prosody")
-        if "prosody" in file_result:
-            prosody = file_result["prosody"]
-            # Los resultados vienen en una lista "predictions" dentro del modelo
-            for pred in prosody.get("predictions", []):
-                # Dentro de cada predicción hay una lista de "emotions"
-                for emo in pred.get("emotions", []):
+        # La estructura correcta: file_result["models"]["prosody"]
+        if "models" in file_result and "prosody" in file_result["models"]:
+            prosody = file_result["models"]["prosody"]
+            # Dentro puede haber "grouped_predictions" o directamente "predictions"
+            if "grouped_predictions" in prosody:
+                segments = []
+                for group in prosody["grouped_predictions"]:
+                    segments.extend(group.get("predictions", []))
+            elif "predictions" in prosody:
+                segments = prosody["predictions"]
+            else:
+                continue
+
+            for seg in segments:
+                for emo in seg.get("emotions", []):
                     name = emo.get("name", "")
                     score = emo.get("score", 0.0)
                     emotion_totals[name] = emotion_totals.get(name, 0.0) + score
                     count += 1
+
     if count == 0:
         return {}
     return {name: total/count for name, total in emotion_totals.items()}
-
+    
 # ------------------------------------------------------------
 # Funciones de feedback y radar (igual que antes)
 # ------------------------------------------------------------
@@ -158,7 +166,7 @@ def generar_feedback(scores, estilo):
         diff = valor_objetivo - actual
         radar_data[emocion] = {"actual": actual, "target": valor_objetivo, "diff": diff}
         if diff > 0.15:
-            if emocion == "Confidence":
+            if emcion == "Confidence":
                 feedback.append("🔴 **Confianza baja**: habla con más firmeza, evita terminar frases con tono ascendente (*uptalk*). Practica finales de frase descendentes.")
             elif emocion == "Excitement":
                 feedback.append("🔴 **Poca energía**: varía más el volumen y la velocidad. Imagina que cuentas una historia emocionante.")
