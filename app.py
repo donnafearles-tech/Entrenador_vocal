@@ -8,9 +8,6 @@ import time
 import json
 import tempfile
 
-# ------------------------------------------------------------
-# Configuración de la página
-# ------------------------------------------------------------
 st.set_page_config(page_title="Entrenador Vocal", page_icon="🎤", layout="wide")
 st.title("🎤 Entrenador Vocal con Hume AI")
 st.markdown("Analiza la entonación, ritmo y tonalidad de tu voz para sonar más **persuasiva**, **directa** o **experta**.")
@@ -34,34 +31,19 @@ if not api_key:
 # ------------------------------------------------------------
 IDEAL_PROFILES = {
     "persuasiva": {
-        "Confidence": 0.85,
-        "Excitement": 0.65,
-        "Joy": 0.60,
-        "Calmness": 0.50,
-        "Determination": 0.75,
-        "Doubt": 0.05,
-        "Anxiety": 0.10,
-        "Contemplation": 0.30
+        "Confidence": 0.85, "Excitement": 0.65, "Joy": 0.60,
+        "Calmness": 0.50, "Determination": 0.75, "Doubt": 0.05,
+        "Anxiety": 0.10, "Contemplation": 0.30
     },
     "directa": {
-        "Confidence": 0.80,
-        "Determination": 0.90,
-        "Anger": 0.25,
-        "Calmness": 0.60,
-        "Doubt": 0.05,
-        "Anxiety": 0.10,
-        "Excitement": 0.40,
-        "Contemplation": 0.20
+        "Confidence": 0.80, "Determination": 0.90, "Anger": 0.25,
+        "Calmness": 0.60, "Doubt": 0.05, "Anxiety": 0.10,
+        "Excitement": 0.40, "Contemplation": 0.20
     },
     "experta": {
-        "Confidence": 0.90,
-        "Calmness": 0.70,
-        "Concentration": 0.60,
-        "Contemplation": 0.50,
-        "Doubt": 0.00,
-        "Anxiety": 0.05,
-        "Excitement": 0.30,
-        "Determination": 0.70
+        "Confidence": 0.90, "Calmness": 0.70, "Concentration": 0.60,
+        "Contemplation": 0.50, "Doubt": 0.00, "Anxiety": 0.05,
+        "Excitement": 0.30, "Determination": 0.70
     }
 }
 
@@ -86,12 +68,10 @@ def get_job_result(api_key, job_id):
     url_status = f"{HUME_BASE_URL}/{job_id}"
     url_predictions = f"{HUME_BASE_URL}/{job_id}/predictions"
     headers = {"X-Hume-Api-Key": api_key}
-
     while True:
         response = requests.get(url_status, headers=headers)
         if response.status_code != 200:
             raise Exception(f"Error al obtener estado: {response.status_code}")
-
         data = response.json()
         state = data.get("state") or data.get("status")
         if isinstance(state, dict):
@@ -100,7 +80,6 @@ def get_job_result(api_key, job_id):
             state = data["job"].get("state") or data["job"].get("status")
         if state is None:
             raise Exception(f"No se pudo determinar el estado. Respuesta: {data}")
-
         state = state.lower()
         if state == "completed":
             pred_response = requests.get(url_predictions, headers=headers)
@@ -114,17 +93,12 @@ def get_job_result(api_key, job_id):
             time.sleep(2)
 
 def extract_emotion_scores(predictions_payload):
-    """
-    Busca recursivamente todas las emociones en la estructura JSON,
-    sin importar dónde estén anidadas. Esto lo hace inmune a cambios de formato.
-    """
+    """Busca recursivamente todas las emociones en la estructura JSON."""
     emotion_totals = {}
     count = 0
-
     def buscar_emociones(obj):
         nonlocal count
         if isinstance(obj, dict):
-            # Si el diccionario tiene una clave "emotions", la procesamos
             if "emotions" in obj:
                 for emo in obj["emotions"]:
                     name = emo.get("name", "")
@@ -132,19 +106,15 @@ def extract_emotion_scores(predictions_payload):
                     if name and score > 0:
                         emotion_totals[name] = emotion_totals.get(name, 0.0) + score
                         count += 1
-            # Recorremos todos los valores del diccionario
             for value in obj.values():
                 buscar_emociones(value)
         elif isinstance(obj, list):
             for item in obj:
                 buscar_emociones(item)
-
-    # Iniciar la búsqueda en toda la carga
     buscar_emociones(predictions_payload)
-
     if count == 0:
         return {}
-    return {name: total / count for name, total in emotion_totals.items()}
+    return {name: total/count for name, total in emotion_totals.items()}
 
 # ------------------------------------------------------------
 # Feedback y radar
@@ -201,11 +171,7 @@ def crear_radar(radar_data, estilo):
 # Interfaz de Streamlit
 # ------------------------------------------------------------
 st.sidebar.header("Configuración")
-estilo = st.sidebar.selectbox(
-    "¿Qué estilo quieres practicar?",
-    ("persuasiva", "directa", "experta")
-)
-
+estilo = st.sidebar.selectbox("¿Qué estilo quieres practicar?", ("persuasiva", "directa", "experta"))
 archivo_subido = st.file_uploader("Sube tu grabación de voz (formato WAV o MP3)", type=["wav", "mp3"])
 
 if archivo_subido is not None:
@@ -218,22 +184,16 @@ if archivo_subido is not None:
     if st.button("Analizar mi voz"):
         with st.spinner("Analizando tu voz con Hume AI... Esto puede tardar unos segundos."):
             try:
-                # 1. Iniciar job
                 job_id = start_job(api_key, audio_path)
                 st.text(f"Job ID: {job_id} (procesando...)")
-
-                # 2. Obtener resultados completos
                 results = get_job_result(api_key, job_id)
                 predictions = results.get("predictions", [])
-
-                # 3. Extraer emociones con la función recursiva (¡siempre funciona!)
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
-                    st.error("No se pudieron extraer emociones del audio. Revisa que el audio contenga voz clara.")
+                    st.error("No se pudieron extraer emociones del audio. Revisa que el archivo contenga voz clara.")
                 else:
                     st.success("✅ Análisis completado")
-
                     st.subheader("📊 Emociones detectadas en tu voz")
                     cols = st.columns(len(scores))
                     for i, (emo, val) in enumerate(sorted(scores.items(), key=lambda x: x[1], reverse=True)):
