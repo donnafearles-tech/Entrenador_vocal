@@ -227,7 +227,17 @@ if archivo_subido is not None:
 
                 # Extraemos las predicciones 
                 predictions = results.get("predictions", [])
-                st.write("📦 Contenido real de 'predictions':", predictions)
+
+# DEBUG: mostrar el primer segmento con emociones
+if predictions:
+    try:
+        primer_segmento = predictions[0]["results"]["predictions"][0]
+        st.write("🔎 Primer segmento (incluyendo emociones):")
+        st.json(primer_segmento)
+    except:
+        st.warning("No se pudo acceder al primer segmento para debug.")
+
+scores = extract_emotion_scores(predictions)
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
