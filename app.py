@@ -117,7 +117,10 @@ def get_job_result(api_key, job_id):
 
 def extract_emotion_scores(predictions_payload):
     emotion_totals = {}
-    segment_count = 0  
+    segment_count = 0
+    # Variable para controlar la impresión única de depuración
+    debug_printed = False
+
     for item in predictions_payload:
         if "results" in item and "predictions" in item["results"]:
             for pred in item["results"]["predictions"]:
@@ -127,11 +130,16 @@ def extract_emotion_scores(predictions_payload):
                             segment_count += 1
                             for emo in segment.get("emotions", []):
                                 eng_name = emo.get("name", "")
-                                st.write(f"Emoción original: {eng_name} -> {emo.get('score', 0.0)}")
+                                # --- Depuración controlada ---
+                                if not debug_printed and eng_name == "Confidence":
+                                    st.write(f"🔎 Muestra de depuración: '{eng_name}' = {emo.get('score', 0.0)} (primer segmento)")
+                                    debug_printed = True
+                                # ---------------------------
                                 esp_name = TRADUCCION_EMOCIONES.get(eng_name, eng_name)
                                 score = emo.get("score", 0.0)
                                 emotion_totals[esp_name] = emotion_totals.get(esp_name, 0.0) + score
-    if segment_count == 0: return {}
+    if segment_count == 0:
+        return {}
     return {name: total / segment_count for name, total in emotion_totals.items()}
 
 # ------------------------------------------------------------
