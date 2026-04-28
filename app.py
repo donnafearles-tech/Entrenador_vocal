@@ -76,14 +76,16 @@ def start_job(api_key, file_path):
     headers = {"X-Hume-Api-Key": api_key}
     with open(file_path, "rb") as f:
         files = {"file": f}
-        models = json.dumps({"prosody": {}})
-        data = {"models": models}
+        # CORRECCIÓN: ahora la configuración de modelos va dentro del campo "json"
+        json_payload = json.dumps({"models": {"prosody": {}}})
+        data = {"json": json_payload}
         response = requests.post(HUME_BASE_URL, files=files, data=data, headers=headers)
     if response.status_code == 200:
         return response.json()["job_id"]
     else:
-        raise Exception(f"Error al iniciar job: {response.status_code} {response.text}")
-
+        error_msg = f"Error {response.status_code}: {response.text}"
+        raise Exception(error_msg)
+        
 def get_job_result(api_key, job_id):
     """Espera hasta que el job termine y devuelve las predicciones."""
     url = f"{HUME_BASE_URL}/{job_id}"
