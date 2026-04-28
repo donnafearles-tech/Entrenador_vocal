@@ -1,4 +1,4 @@
-# app.py - Entrenador Vocal con Hume AI (API REST)
+# app.py - Entrenador Vocal con Hume AI (versión final robusta)
 import streamlit as st
 import os
 import numpy as np
@@ -86,15 +86,13 @@ def get_job_result(api_key, job_id):
     url_status = f"{HUME_BASE_URL}/{job_id}"
     url_predictions = f"{HUME_BASE_URL}/{job_id}/predictions"
     headers = {"X-Hume-Api-Key": api_key}
-    
+
     while True:
-        # 1. Consultar el estado del trabajo
         response = requests.get(url_status, headers=headers)
         if response.status_code != 200:
             raise Exception(f"Error al obtener estado: {response.status_code}")
-        
+
         data = response.json()
-        
         state = data.get("state") or data.get("status")
         if isinstance(state, dict):
             state = state.get("state") or state.get("status")
@@ -102,49 +100,51 @@ def get_job_result(api_key, job_id):
             state = data["job"].get("state") or data["job"].get("status")
         if state is None:
             raise Exception(f"No se pudo determinar el estado. Respuesta: {data}")
-            
+
         state = state.lower()
-        
         if state == "completed":
-            # 2. El trabajo terminó. Ahora pedimos las predicciones.
             pred_response = requests.get(url_predictions, headers=headers)
             if pred_response.status_code == 200:
-                # Retornamos el array de resultados envuelto en la clave "predictions"
                 return {"predictions": pred_response.json()}
             else:
                 raise Exception(f"Error al obtener predicciones: {pred_response.status_code}")
-                
         elif state in ("failed", "cancelled"):
-            raise Exception(f"El trabajo de Hume terminó con error o fue cancelado. Estado: {state}")
+            raise Exception(f"El trabajo terminó con error o fue cancelado. Estado: {state}")
         else:
-            # Esperar antes de volver a consultar el estado
             time.sleep(2)
 
 def extract_emotion_scores(predictions_payload):
-    """Extrae puntuaciones promedio navegando la estructura oficial de Hume."""
+    """
+    Busca recursivamente todas las emociones en la estructura JSON,
+    sin importar dónde estén anidadas. Esto lo hace inmune a cambios de formato.
+    """
     emotion_totals = {}
     count = 0
-    
-    for item in predictions_payload:
-        # La estructura oficial es: item -> results -> predictions -> models -> prosody
-        if "results" in item and "predictions" in item["results"]:
-            for pred in item["results"]["predictions"]:
-                if "models" in pred and "prosody" in pred["models"]:
-                    prosody = pred["models"]["prosody"]
-                    
-                    if "grouped_predictions" in prosody:
-                        for group in prosody["grouped_predictions"]:
-                            for segment in group.get("predictions", []):
-                                for emo in segment.get("emotions", []):
-                                    name = emo.get("name", "")
-                                    score = emo.get("score", 0.0)
-                                    emotion_totals[name] = emotion_totals.get(name, 0.0) + score
-                                    count += 1
-                                    
+
+    def buscar_emociones(obj):
+        nonlocal count
+        if isinstance(obj, dict):
+            # Si el diccionario tiene una clave "emotions", la procesamos
+            if "emotions" in obj:
+                for emo in obj["emotions"]:
+                    name = emo.get("name", "")
+                    score = emo.get("score", 0.0)
+                    if name and score > 0:
+                        emotion_totals[name] = emotion_totals.get(name, 0.0) + score
+                        count += 1
+            # Recorremos todos los valores del diccionario
+            for value in obj.values():
+                buscar_emociones(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                buscar_emociones(item)
+
+    # Iniciar la búsqueda en toda la carga
+    buscar_emociones(predictions_payload)
+
     if count == 0:
         return {}
-        
-    return {name: total/count for name, total in emotion_totals.items()}
+    return {name: total / count for name, total in emotion_totals.items()}
 
 # ------------------------------------------------------------
 # Feedback y radar
@@ -224,24 +224,13 @@ if archivo_subido is not None:
 
                 # 2. Obtener resultados completos
                 results = get_job_result(api_key, job_id)
-
-                # Extraemos las predicciones 
                 predictions = results.get("predictions", [])
 
-# DEBUG: mostrar el primer segmento con emociones
-if predictions:
-    try:
-        primer_segmento = predictions[0]["results"]["predictions"][0]
-        st.write("🔎 Primer segmento (incluyendo emociones):")
-        st.json(primer_segmento)
-    except:
-        st.warning("No se pudo acceder al primer segmento para debug.")
-
-scores = extract_emotion_scores(predictions)
+                # 3. Extraer emociones con la función recursiva (¡siempre funciona!)
                 scores = extract_emotion_scores(predictions)
 
                 if not scores:
-                    st.error("No se pudieron extraer emociones del audio. Revisa el archivo subido.")
+                    st.error("No se pudieron extraer emociones del audio. Revisa que el audio contenga voz clara.")
                 else:
                     st.success("✅ Análisis completado")
 
@@ -252,7 +241,6 @@ scores = extract_emotion_scores(predictions)
 
                     feedback, radar_data = generar_feedback(scores, estilo)
                     st.subheader(f"🎯 Recomendaciones para sonar más {estilo}")
-                    
                     if len(feedback) == 0:
                         st.markdown("- ¡Excelente trabajo! Tu voz se ajusta muy bien al perfil seleccionado.")
                     else:
