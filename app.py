@@ -79,6 +79,7 @@ def start_job(api_key, file_path):
     headers = {"X-Hume-Api-Key": api_key}
     with open(file_path, "rb") as f:
         files = {"file": f}
+        # Incluimos los modelos de prosodia y lenguaje (transcripción)
         json_payload = json.dumps({"models": {"prosody": {}, "language": {}}})
         data = {"json": json_payload}
         response = requests.post(HUME_BASE_URL, files=files, data=data, headers=headers)
@@ -221,19 +222,14 @@ if archivo_subido:
                     else:
                         st.warning("⚠️ Confianza no fue detectada (valor = 0.0)")
 
-                    # --- Diagnóstico de transcripción ---
+                    # --- Diagnóstico de transcripción (CORREGIDO) ---
                     if predictions:
                         try:
-                            # Navegar por la estructura para obtener el texto transcrito
-                            primer_resultado = predictions[0]
-                            modelos = primer_resultado["results"]["predictions"][0]["models"]
-                            if "transcription" in modelos:
-                                texto_transcrito = modelos["transcription"]["grouped_predictions"][0]["predictions"][0]["text"]
-                                st.info(f"📝 Texto transcrito por Hume: \"{texto_transcrito}\"")
-                            else:
-                                st.warning("No se encontró el modelo de transcripción en la respuesta.")
-                        except (KeyError, IndexError) as e:
-                            st.warning(f"No se pudo extraer la transcripción: {e}")
+                            # Ruta correcta usando el modelo "language"
+                            texto_transcrito = results['predictions'][0]['results']['predictions'][0]['models']['language']['grouped_predictions'][0]['predictions'][0]['text']
+                            st.info(f"📝 Texto transcrito por Hume: \"{texto_transcrito}\"")
+                        except (KeyError, IndexError, TypeError) as e:
+                            st.warning(f"No se pudo extraer la transcripción. La estructura del JSON no es la esperada. Error: {e}")
 
                     # Kanban
                     st.subheader("📋 Tablero de Intensidad Vocal")
