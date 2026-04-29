@@ -1,4 +1,4 @@
-# app.py - Entrenador Vocal con Hume AI (API REST, audio normalizado)
+# app.py - Entrenador Vocal con Hume AI (API REST)
 import streamlit as st
 import os
 import requests
@@ -6,8 +6,6 @@ import time
 import json
 import tempfile
 import plotly.graph_objects as go
-import soundfile as sf
-import numpy as np
 
 # ------------------------------------------------------------
 # Configuración de la página
@@ -93,29 +91,45 @@ def get_job_result(api_key, job_id):
     url_status = f"{HUME_BASE_URL}/{job_id}"
     url_predictions = f"{HUME_BASE_URL}/{job_id}/predictions"
     headers = {"X-Hume-Api-Key": api_key}
-
+    
     while True:
         res = requests.get(url_status, headers=headers)
         data = res.json()
-
+        
         state = data.get("state") or data.get("status")
         if isinstance(state, dict):
             state = state.get("status") or state.get("state", "")
+            
         if state is None and "job" in data:
             state = data["job"].get("state") or data["job"].get("status", "")
+            
         state = str(state).lower()
-
+        
         if state == "completed":
             pred_res = requests.get(url_predictions, headers=headers)
             return {"predictions": pred_res.json()}
         elif state in ("failed", "cancelled"):
             raise Exception(f"Error en el Job: {state}")
+            
         time.sleep(2)
+
+def calcular_confianza_artificial(scores):
+    """Calcula la confianza en base a una fórmula ponderada."""
+    determinacion = scores.get("Determinación", 0.0)
+    calma = scores.get("Calma", 0.0)
+    entusiasmo = scores.get("Entusiasmo", 0.0)
+    ansiedad = scores.get("Ansiedad", 0.0)
+    duda = scores.get("Duda", 0.0)
+
+    confianza = (determinacion * 0.4) + (calma * 0.3) + (entusiasmo * 0.2) - (ansiedad * 0.5) - (duda * 0.5)
+    
+    # Normalizar para que el valor esté entre 0 y 1
+    confianza_normalizada = max(0.0, min(1.0, confianza))
+    return confianza_normalizada
 
 def extract_emotion_scores(predictions_payload):
     emotion_totals = {}
     segment_count = 0
-    debug_printed = False
 
     for item in predictions_payload:
         if "results" in item and "predictions" in item["results"]:
@@ -126,19 +140,53 @@ def extract_emotion_scores(predictions_payload):
                             segment_count += 1
                             for emo in segment.get("emotions", []):
                                 eng_name = emo.get("name", "")
-                                if not debug_printed and eng_name == "Confidence":
-                                    st.write(f"🔎 Muestra de depuración: '{eng_name}' = {emo.get('score', 0.0)} (primer segmento)")
-                                    debug_printed = True
                                 esp_name = TRADUCCION_EMOCIONES.get(eng_name, eng_name)
                                 score = emo.get("score", 0.0)
                                 emotion_totals[esp_name] = emotion_totals.get(esp_name, 0.0) + score
+    
     if segment_count == 0:
         return {}
-    return {name: total / segment_count for name, total in emotion_totals.items()}
+        
+    promedios = {name: total / segment_count for name, total in emotion_totals.items()}
+    
+    # 🌟 Integración de la nueva función de Confianza
+    promedios["Confianza"] = calcular_confianza_artificial(promedios)
+    
+    return promedios
 
 # ------------------------------------------------------------
 # Visualización y Feedback
 # ------------------------------------------------------------
+def generar_feedback(scores, estilo):
+    ideal = IDEAL_PROFILES[estilo]
+    feedback = []
+    
+    for emocion, valor_objetivo in ideal.items():
+        actual = scores.get(emocion, 0.0)
+        diff = valor_objetivo - actual
+        
+        if diff > 0.15:
+            if emocion == "Confianza":
+                feedback.append("🔴 **Confianza baja**: habla con más firmeza, evita terminar frases con tono ascendente (*uptalk*).")
+            elif emocion == "Entusiasmo":
+                feedback.append("🔴 **Poca energía**: varía más el volumen y la velocidad. Imagina que cuentas una historia.")
+            elif emocion == "Determinación":
+                feedback.append("🔴 **Determinación baja**: enfatiza palabras clave con un leve aumento del volumen.")
+            elif emocion == "Calma":
+                feedback.append("🔴 **Falta de calma (inseguridad)**: reduce la velocidad, haz pausas estratégicas y respira antes de empezar.")
+        elif diff < -0.15:
+            if emocion == "Ansiedad":
+                feedback.append("🟡 **Nerviosismo**: exhala lentamente antes de hablar y practica con un ritmo más relajado.")
+            elif emocion == "Duda":
+                feedback.append("🟡 **Dudas vocales**: elimina vacilaciones y muletillas.")
+            elif emocion == "Enojo" and estilo != "directa":
+                feedback.append("🟡 **Tono agresivo**: baja el volumen y añade más pausas. La persuasión suave suele ser más eficaz.")
+                
+    if scores.get("Aburrimiento", 0) > 0.4:
+        feedback.append("⚪ **Voz monótona**: practica exagerar las subidas y bajadas de tono mientras grabas.")
+        
+    return feedback
+
 def crear_radar_plotly(radar_data, estilo):
     etiquetas = list(radar_data.keys())
     actuales = [v["actual"] * 100 for v in radar_data.values()]
@@ -158,29 +206,24 @@ def crear_radar_plotly(radar_data, estilo):
             angularaxis=dict(tickfont=dict(size=10), rotation=90, direction="clockwise")
         ),
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
-        margin=dict(l=50, r=50, t=40, b=80),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25, 
+            xanchor="center",
+            x=0.5
+        ),
+        margin=dict(l=50, r=50, t=40, b=80), 
         height=500,
         title=dict(text="Comparativa de Tono", x=0.5, xanchor='center'),
         dragmode="zoom",
         hovermode="closest"
     )
+    
     fig.update_xaxes(showspikes=True, spikemode='across')
     fig.update_yaxes(showspikes=True, spikemode='across')
+    
     return fig
-
-# ------------------------------------------------------------
-# Normalización de audio con soundfile
-# ------------------------------------------------------------
-def normalizar_audio(archivo_subido):
-    """Lee cualquier WAV, lo convierte a mono 16-bit PCM y devuelve la ruta del archivo temporal."""
-    data, samplerate = sf.read(archivo_subido)
-    if data.ndim > 1:
-        data = np.mean(data, axis=1)
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    sf.write(tmp.name, data, samplerate, subtype='PCM_16')
-    duracion = len(data) / samplerate
-    return tmp.name, duracion
 
 # ------------------------------------------------------------
 # UI Streamlit
@@ -188,21 +231,24 @@ def normalizar_audio(archivo_subido):
 st.sidebar.header("Opciones")
 estilo = st.sidebar.selectbox("¿Qué estilo quieres practicar?", ("persuasiva", "directa", "experta"))
 
-archivo_subido = st.file_uploader("Sube tu voz (WAV)", type=["wav"])
+archivo_subido = st.file_uploader("Sube tu voz (WAV/MP3)", type=["wav", "mp3"])
 
 if archivo_subido:
-    try:
-        audio_path, duracion = normalizar_audio(archivo_subido)
-        st.audio(archivo_subido)          # original
-        st.audio(audio_path)             # normalizado (el que va a Hume)
-        tamano_mb = len(archivo_subido.getvalue()) / (1024 * 1024)
-        st.write(f"📦 Tamaño original: {tamano_mb:.2f} MB | ⏱️ Duración: {duracion:.2f} segundos")
-    except Exception as e:
-        st.error(f"Error al procesar el archivo de audio: {e}")
-        st.stop()
+    _, extension = os.path.splitext(archivo_subido.name)
+    if not extension:
+        extension = ".wav"
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as tmp:
+        tmp.write(archivo_subido.read())
+        audio_path = tmp.name
 
+    st.audio(archivo_subido)
+    
+    tamano_mb = len(archivo_subido.getvalue()) / (1024 * 1024)
+    st.write(f"📦 Tamaño del archivo: {tamano_mb:.2f} MB")
+    
     if st.button("Analizar ahora"):
-        with st.spinner("Analizando matices vocales..."):
+        with st.spinner("Analizando matices vocales y transcribiendo..."):
             try:
                 job_id = start_job(api_key, audio_path)
                 results = get_job_result(api_key, job_id)
@@ -213,24 +259,36 @@ if archivo_subido:
                     st.error("No se detectó audio claro.")
                 else:
                     st.success("✅ Análisis completado")
-
+                    
                     if "Confianza" in scores:
-                        st.info(f"📊 **Confianza detectada:** {scores['Confianza']*100:.2f}%")
-                    else:
-                        st.warning("⚠️ Confianza no fue detectada (valor = 0.0)")
+                        st.info(f"📊 **Nivel de Confianza proyectada:** {scores['Confianza']*100:.2f}%")
 
-                    # Transcripción con conteo de palabras
-                    if predictions:
-                        try:
-                            texto = results['predictions'][0]['results']['predictions'][0]['models']['language']['grouped_predictions'][0]['predictions'][0]['text']
-                            st.info(f"📝 Texto transcrito ({len(texto.split())} palabras): \"{texto}\"")
-                        except (KeyError, IndexError, TypeError) as e:
-                            st.warning(f"No se pudo extraer la transcripción: {e}")
+                    # Transcripción
+                    textos_transcritos = []
+                    try:
+                        for item in predictions:
+                            if "results" in item and "predictions" in item["results"]:
+                                for pred in item["results"]["predictions"]:
+                                    if "models" in pred and "language" in pred["models"]:
+                                        for group in pred["models"]["language"].get("grouped_predictions", []):
+                                            for segment in group.get("predictions", []):
+                                                texto = segment.get("text", "").strip()
+                                                if texto:
+                                                    textos_transcritos.append(texto)
+                        
+                        texto_completo = " ".join(textos_transcritos)
+                        if texto_completo:
+                            st.info(f"📝 **Texto completo transcrito:** \"{texto_completo}\"")
+                        else:
+                            st.warning("⚠️ No se detectaron palabras claras para transcribir.")
+                    except Exception as e:
+                        st.warning(f"Error al extraer la transcripción: {e}")
 
                     # Kanban
                     st.subheader("📋 Tablero de Intensidad Vocal")
                     sorted_emotions = sorted(scores.items(), key=lambda x: x[1], reverse=True)
                     c1, c2, c3 = st.columns(3)
+                    
                     with c1:
                         st.markdown("### 🔴 Alta")
                         for e, v in sorted_emotions:
@@ -243,22 +301,31 @@ if archivo_subido:
                                 with st.container(border=True): st.markdown(f"**{e}**\n### {v*100:.1f}%")
                     with c3:
                         st.markdown("### ⚪ Baja")
-                        for e, v in sorted_emotions[:15]:
+                        for e, v in sorted_emotions[:15]: 
                             if v < 0.10:
                                 with st.container(border=True): st.markdown(f"**{e}**\n### {v*100:.1f}%")
 
                     # Radar
                     st.markdown("---")
                     st.subheader("📈 Mapa de Perfil Vocal")
-                    st.markdown("💡 *Puedes hacer zoom en el gráfico.*")
+                    st.markdown("💡 *Puedes hacer zoom en el gráfico: arrastra para zoom, usa la rueda del ratón o los botones de control.*")
                     radar_data = {e: {"actual": scores.get(e, 0.0), "target": v} for e, v in IDEAL_PROFILES[estilo].items()}
                     fig = crear_radar_plotly(radar_data, estilo)
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
 
+                    # Recomendaciones
+                    st.markdown("---")
+                    st.subheader(f"🎯 Tips para sonar más {estilo}")
+                    feedback_textos = generar_feedback(scores, estilo)
+                    
+                    if not feedback_textos:
+                        st.info("¡Excelente trabajo! Tu voz se ajusta muy bien al perfil seleccionado.")
+                    else:
+                        for rec in feedback_textos:
+                            st.markdown(f"- {rec}")
+
             except Exception as e:
                 st.error(f"Error: {e}")
             finally:
-                if os.path.exists(audio_path):
-                    os.unlink(audio_path)
-else:
-    st.info("👆 Sube un archivo de audio para comenzar")
+                if os.path.exists(audio_path): os.unlink(audio_path)
+        
