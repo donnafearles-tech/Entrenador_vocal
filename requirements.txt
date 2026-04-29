@@ -6,3 +6,5 @@ requests
 plotly
 soundfile
 eng-to-ipa
+librosa
+numpy
