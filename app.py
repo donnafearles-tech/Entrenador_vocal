@@ -6,6 +6,8 @@ import time
 import json
 import tempfile
 import plotly.graph_objects as go
+import soundfile as sf
+import numpy as np
 
 # ------------------------------------------------------------
 # Configuración de la página
@@ -79,7 +81,6 @@ def start_job(api_key, file_path):
     headers = {"X-Hume-Api-Key": api_key}
     with open(file_path, "rb") as f:
         files = {"file": f}
-        # Incluimos los modelos de prosodia y lenguaje (transcripción)
         json_payload = json.dumps({"models": {"prosody": {}, "language": {}}})
         data = {"json": json_payload}
         response = requests.post(HUME_BASE_URL, files=files, data=data, headers=headers)
@@ -97,15 +98,11 @@ def get_job_result(api_key, job_id):
         res = requests.get(url_status, headers=headers)
         data = res.json()
         
-        # Extracción segura del estado
         state = data.get("state") or data.get("status")
         if isinstance(state, dict):
             state = state.get("status") or state.get("state", "")
-            
         if state is None and "job" in data:
             state = data["job"].get("state") or data["job"].get("status", "")
-            
-        # Convertimos a string de forma segura antes de minúsculas
         state = str(state).lower()
         
         if state == "completed":
@@ -113,13 +110,11 @@ def get_job_result(api_key, job_id):
             return {"predictions": pred_res.json()}
         elif state in ("failed", "cancelled"):
             raise Exception(f"Error en el Job: {state}")
-            
         time.sleep(2)
 
 def extract_emotion_scores(predictions_payload):
     emotion_totals = {}
     segment_count = 0
-    # Variable para controlar la impresión única de depuración
     debug_printed = False
 
     for item in predictions_payload:
@@ -131,11 +126,9 @@ def extract_emotion_scores(predictions_payload):
                             segment_count += 1
                             for emo in segment.get("emotions", []):
                                 eng_name = emo.get("name", "")
-                                # --- Depuración controlada ---
                                 if not debug_printed and eng_name == "Confidence":
                                     st.write(f"🔎 Muestra de depuración: '{eng_name}' = {emo.get('score', 0.0)} (primer segmento)")
                                     debug_printed = True
-                                # ---------------------------
                                 esp_name = TRADUCCION_EMOCIONES.get(eng_name, eng_name)
                                 score = emo.get("score", 0.0)
                                 emotion_totals[esp_name] = emotion_totals.get(esp_name, 0.0) + score
@@ -165,25 +158,31 @@ def crear_radar_plotly(radar_data, estilo):
             angularaxis=dict(tickfont=dict(size=10), rotation=90, direction="clockwise")
         ),
         showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.25, 
-            xanchor="center",
-            x=0.5
-        ),
-        margin=dict(l=50, r=50, t=40, b=80), 
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+        margin=dict(l=50, r=50, t=40, b=80),
         height=500,
         title=dict(text="Comparativa de Tono", x=0.5, xanchor='center'),
         dragmode="zoom",
         hovermode="closest"
     )
-    
-    # Configurar interactividad del gráfico
     fig.update_xaxes(showspikes=True, spikemode='across')
     fig.update_yaxes(showspikes=True, spikemode='across')
-    
     return fig
+
+# ------------------------------------------------------------
+# Normalización de audio con soundfile
+# ------------------------------------------------------------
+def normalizar_audio(archivo_subido):
+    """Lee cualquier WAV, lo convierte a mono 16-bit PCM y devuelve la ruta del archivo temporal."""
+    # Leer datos directamente desde el UploadedFile
+    data, samplerate = sf.read(archivo_subido)
+    # Convertir a mono si es estéreo
+    if data.ndim > 1:
+        data = np.mean(data, axis=1)
+    # Guardar en un archivo temporal WAV PCM 16-bit
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    sf.write(tmp.name, data, samplerate, subtype='PCM_16')
+    return tmp.name, len(data) / samplerate
 
 # ------------------------------------------------------------
 # UI Streamlit
@@ -191,23 +190,19 @@ def crear_radar_plotly(radar_data, estilo):
 st.sidebar.header("Opciones")
 estilo = st.sidebar.selectbox("¿Qué estilo quieres practicar?", ("persuasiva", "directa", "experta"))
 
-archivo_subido = st.file_uploader("Sube tu voz (WAV/MP3)", type=["wav", "mp3"])
+archivo_subido = st.file_uploader("Sube tu voz (WAV)", type=["wav"])
 
 if archivo_subido:
-    # Obtener extensión original
-    _, extension = os.path.splitext(archivo_subido.name)
-    if not extension:
-        extension = ".wav"
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as tmp:
-        tmp.write(archivo_subido.read())
-        audio_path = tmp.name
+    try:
+        # Normalizar el audio y obtener duración
+        audio_path, duracion = normalizar_audio(archivo_subido)
+        st.audio(archivo_subido)
+        tamano_mb = len(archivo_subido.getvalue()) / (1024 * 1024)
+        st.write(f"📦 Tamaño: {tamano_mb:.2f} MB | ⏱️ Duración: {duracion:.2f} segundos")
+    except Exception as e:
+        st.error(f"Error al procesar el archivo de audio. Asegúrate de que sea un WAV válido. Detalle: {e}")
+        st.stop()
 
-    st.audio(archivo_subido)
-    
-    tamano_mb = len(archivo_subido.getvalue()) / (1024 * 1024)
-    st.write(f"📦 Tamaño del archivo subido: {tamano_mb:.2f} MB")
-    # ... el resto sigue igual
     if st.button("Analizar ahora"):
         with st.spinner("Analizando matices vocales..."):
             try:
@@ -221,26 +216,23 @@ if archivo_subido:
                 else:
                     st.success("✅ Análisis completado")
                     
-                    # Mostrar depuración de confianza AQUÍ, claramente visible
                     if "Confianza" in scores:
                         st.info(f"📊 **Confianza detectada:** {scores['Confianza']*100:.2f}%")
                     else:
                         st.warning("⚠️ Confianza no fue detectada (valor = 0.0)")
 
-                    # --- Diagnóstico de transcripción (CORREGIDO) ---
+                    # Transcripción
                     if predictions:
                         try:
-                            # Ruta correcta usando el modelo "language"
-                            texto_transcrito = results['predictions'][0]['results']['predictions'][0]['models']['language']['grouped_predictions'][0]['predictions'][0]['text']
-                            st.info(f"📝 Texto transcrito por Hume: \"{texto_transcrito}\"")
+                            texto = results['predictions'][0]['results']['predictions'][0]['models']['language']['grouped_predictions'][0]['predictions'][0]['text']
+                            st.info(f"📝 Texto transcrito: \"{texto}\"")
                         except (KeyError, IndexError, TypeError) as e:
-                            st.warning(f"No se pudo extraer la transcripción. La estructura del JSON no es la esperada. Error: {e}")
+                            st.warning(f"No se pudo extraer la transcripción. Error: {e}")
 
                     # Kanban
                     st.subheader("📋 Tablero de Intensidad Vocal")
                     sorted_emotions = sorted(scores.items(), key=lambda x: x[1], reverse=True)
                     c1, c2, c3 = st.columns(3)
-                    
                     with c1:
                         st.markdown("### 🔴 Alta")
                         for e, v in sorted_emotions:
@@ -253,14 +245,14 @@ if archivo_subido:
                                 with st.container(border=True): st.markdown(f"**{e}**\n### {v*100:.1f}%")
                     with c3:
                         st.markdown("### ⚪ Baja")
-                        for e, v in sorted_emotions[:15]: 
+                        for e, v in sorted_emotions[:15]:
                             if v < 0.10:
                                 with st.container(border=True): st.markdown(f"**{e}**\n### {v*100:.1f}%")
 
-                    # Radar Centrado
+                    # Radar
                     st.markdown("---")
                     st.subheader("📈 Mapa de Perfil Vocal")
-                    st.markdown("💡 *Puedes hacer zoom en el gráfico: arrastra para zoom, usa la rueda del ratón o los botones de control.*")
+                    st.markdown("💡 *Puedes hacer zoom en el gráfico.*")
                     radar_data = {e: {"actual": scores.get(e, 0.0), "target": v} for e, v in IDEAL_PROFILES[estilo].items()}
                     fig = crear_radar_plotly(radar_data, estilo)
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
@@ -268,4 +260,7 @@ if archivo_subido:
             except Exception as e:
                 st.error(f"Error: {e}")
             finally:
-                if os.path.exists(audio_path): os.unlink(audio_path)
+                if os.path.exists(audio_path):
+                    os.unlink(audio_path)
+else:
+    st.info("👆 Sube un archivo de audio para comenzar")
