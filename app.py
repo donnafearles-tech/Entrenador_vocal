@@ -1,4 +1,4 @@
-# app.py - Entrenador Vocal con Hume AI (API REST)
+# app.py - Entrenador Vocal con Hume AI (API REST) + Partitura IPA
 import streamlit as st
 import os
 import requests
@@ -6,6 +6,7 @@ import time
 import json
 import tempfile
 import plotly.graph_objects as go
+import eng_to_ipa as ipa  # ← NUEVA IMPORTACIÓN
 
 # ------------------------------------------------------------
 # Configuración de la página
@@ -122,8 +123,6 @@ def calcular_confianza_artificial(scores):
     duda = scores.get("Duda", 0.0)
 
     confianza = (determinacion * 0.4) + (calma * 0.3) + (entusiasmo * 0.2) - (ansiedad * 0.5) - (duda * 0.5)
-    
-    # Normalizar para que el valor esté entre 0 y 1
     confianza_normalizada = max(0.0, min(1.0, confianza))
     return confianza_normalizada
 
@@ -148,11 +147,25 @@ def extract_emotion_scores(predictions_payload):
         return {}
         
     promedios = {name: total / segment_count for name, total in emotion_totals.items()}
-    
-    # 🌟 Integración de la nueva función de Confianza
     promedios["Confianza"] = calcular_confianza_artificial(promedios)
-    
     return promedios
+
+# ------------------------------------------------------------
+# NUEVA FUNCIÓN: Partitura IPA
+# ------------------------------------------------------------
+def generar_partitura_ipa(texto):
+    """
+    Convierte el texto transcrito en una representación fonética (IPA)
+    que incluye acentos primarios (ˈ) y secundarios (ˌ).
+    """
+    if not texto:
+        return ""
+    try:
+        transcripcion = ipa.convert(texto, keep_punct=False, retrieve_all=False)
+        return transcripcion
+    except Exception as e:
+        st.warning(f"No se pudo generar la partitura IPA: {e}")
+        return texto
 
 # ------------------------------------------------------------
 # Visualización y Feedback
@@ -284,6 +297,18 @@ if archivo_subido:
                     except Exception as e:
                         st.warning(f"Error al extraer la transcripción: {e}")
 
+                    # 🎼 NUEVA PARTITURA IPA
+                    if texto_completo:
+                        st.markdown("---")
+                        st.subheader("🎼 Partitura Fonética (IPA) para practicar prosodia")
+                        ipa_transcrito = generar_partitura_ipa(texto_completo)
+                        st.markdown(f"""
+                        <div style="background-color:#F0F2F6; padding:20px; border-radius:10px; font-family:'Courier New', monospace; font-size:24px; line-height:1.8; letter-spacing:2px; word-spacing:12px;">
+                        {ipa_transcrito}
+                        </div>
+                        """, unsafe_allow_html=True)
+                        st.caption("Los símbolos ˈ indican sílaba tónica (más fuerte), ˌ indica acento secundario, . separa sílabas.")
+
                     # Kanban
                     st.subheader("📋 Tablero de Intensidad Vocal")
                     sorted_emotions = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -328,4 +353,3 @@ if archivo_subido:
                 st.error(f"Error: {e}")
             finally:
                 if os.path.exists(audio_path): os.unlink(audio_path)
-        
