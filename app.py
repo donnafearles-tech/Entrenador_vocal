@@ -194,7 +194,12 @@ estilo = st.sidebar.selectbox("¿Qué estilo quieres practicar?", ("persuasiva",
 archivo_subido = st.file_uploader("Sube tu voz (WAV/MP3)", type=["wav", "mp3"])
 
 if archivo_subido:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+    # Obtener extensión original
+    _, extension = os.path.splitext(archivo_subido.name)
+    if not extension:
+        extension = ".wav"
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as tmp:
         tmp.write(archivo_subido.read())
         audio_path = tmp.name
 
@@ -202,7 +207,7 @@ if archivo_subido:
     
     tamano_mb = len(archivo_subido.getvalue()) / (1024 * 1024)
     st.write(f"📦 Tamaño del archivo subido: {tamano_mb:.2f} MB")
-
+    # ... el resto sigue igual
     if st.button("Analizar ahora"):
         with st.spinner("Analizando matices vocales..."):
             try:
