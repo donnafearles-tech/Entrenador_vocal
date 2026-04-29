@@ -1,4 +1,4 @@
-# app.py - Entrenador Vocal con Hume AI (API REST)
+# app.py - Entrenador Vocal con Hume AI (API REST, audio normalizado)
 import streamlit as st
 import os
 import requests
@@ -93,18 +93,18 @@ def get_job_result(api_key, job_id):
     url_status = f"{HUME_BASE_URL}/{job_id}"
     url_predictions = f"{HUME_BASE_URL}/{job_id}/predictions"
     headers = {"X-Hume-Api-Key": api_key}
-    
+
     while True:
         res = requests.get(url_status, headers=headers)
         data = res.json()
-        
+
         state = data.get("state") or data.get("status")
         if isinstance(state, dict):
             state = state.get("status") or state.get("state", "")
         if state is None and "job" in data:
             state = data["job"].get("state") or data["job"].get("status", "")
         state = str(state).lower()
-        
+
         if state == "completed":
             pred_res = requests.get(url_predictions, headers=headers)
             return {"predictions": pred_res.json()}
@@ -174,15 +174,13 @@ def crear_radar_plotly(radar_data, estilo):
 # ------------------------------------------------------------
 def normalizar_audio(archivo_subido):
     """Lee cualquier WAV, lo convierte a mono 16-bit PCM y devuelve la ruta del archivo temporal."""
-    # Leer datos directamente desde el UploadedFile
     data, samplerate = sf.read(archivo_subido)
-    # Convertir a mono si es estéreo
     if data.ndim > 1:
         data = np.mean(data, axis=1)
-    # Guardar en un archivo temporal WAV PCM 16-bit
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     sf.write(tmp.name, data, samplerate, subtype='PCM_16')
-    return tmp.name, len(data) / samplerate
+    duracion = len(data) / samplerate
+    return tmp.name, duracion
 
 # ------------------------------------------------------------
 # UI Streamlit
@@ -194,13 +192,13 @@ archivo_subido = st.file_uploader("Sube tu voz (WAV)", type=["wav"])
 
 if archivo_subido:
     try:
-        # Normalizar el audio y obtener duración
         audio_path, duracion = normalizar_audio(archivo_subido)
-        st.audio(archivo_subido)
+        st.audio(archivo_subido)          # original
+        st.audio(audio_path)             # normalizado (el que va a Hume)
         tamano_mb = len(archivo_subido.getvalue()) / (1024 * 1024)
-        st.write(f"📦 Tamaño: {tamano_mb:.2f} MB | ⏱️ Duración: {duracion:.2f} segundos")
+        st.write(f"📦 Tamaño original: {tamano_mb:.2f} MB | ⏱️ Duración: {duracion:.2f} segundos")
     except Exception as e:
-        st.error(f"Error al procesar el archivo de audio. Asegúrate de que sea un WAV válido. Detalle: {e}")
+        st.error(f"Error al procesar el archivo de audio: {e}")
         st.stop()
 
     if st.button("Analizar ahora"):
@@ -215,19 +213,19 @@ if archivo_subido:
                     st.error("No se detectó audio claro.")
                 else:
                     st.success("✅ Análisis completado")
-                    
+
                     if "Confianza" in scores:
                         st.info(f"📊 **Confianza detectada:** {scores['Confianza']*100:.2f}%")
                     else:
                         st.warning("⚠️ Confianza no fue detectada (valor = 0.0)")
 
-                    # Transcripción
+                    # Transcripción con conteo de palabras
                     if predictions:
                         try:
                             texto = results['predictions'][0]['results']['predictions'][0]['models']['language']['grouped_predictions'][0]['predictions'][0]['text']
-                            st.info(f"📝 Texto transcrito: \"{texto}\"")
+                            st.info(f"📝 Texto transcrito ({len(texto.split())} palabras): \"{texto}\"")
                         except (KeyError, IndexError, TypeError) as e:
-                            st.warning(f"No se pudo extraer la transcripción. Error: {e}")
+                            st.warning(f"No se pudo extraer la transcripción: {e}")
 
                     # Kanban
                     st.subheader("📋 Tablero de Intensidad Vocal")
