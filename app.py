@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import eng_to_ipa as ipa
 import librosa
 import numpy as np
-import gc  # Importante para limpiar la RAM
+import gc
 
 # ------------------------------------------------------------
 # Configuración de la página
@@ -93,7 +93,7 @@ def get_job_result(api_key, job_id):
         time.sleep(2)
 
 # ------------------------------------------------------------
-# Funciones de Análisis de Emociones y Gráficos
+# Funciones de Análisis, Gráficos y Reportes
 # ------------------------------------------------------------
 def calcular_confianza_artificial(scores):
     determinacion = scores.get("Determination", 0.0)
@@ -139,6 +139,61 @@ def crear_radar_plotly(radar_data, estilo):
         margin=dict(l=50, r=50, t=40, b=80), height=500, title=dict(text="Tone Comparison", x=0.5, xanchor='center')
     )
     return fig
+
+# --- NUEVA FUNCIÓN PARA GENERAR EL REPORTE ---
+def generar_reporte_html(texto, ipa_text, resultados, scores, estilo):
+    html = f"""
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: 'Segoe UI', Arial, sans-serif; padding: 30px; line-height: 1.6; color: #333; }}
+            h1 {{ color: #2C3E50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+            h2 {{ color: #2980b9; margin-top: 30px; }}
+            .ipa-box {{ background-color: #f8f9fa; padding: 15px; border-left: 5px solid #3498db; font-family: monospace; font-size: 16px; margin: 10px 0; }}
+            .ok {{ color: #27ae60; margin-bottom: 8px; }}
+            .warn {{ color: #e67e22; margin-bottom: 8px; }}
+            .emotion-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; max-width: 400px; }}
+            .emotion-item {{ background: #ecf0f1; padding: 10px; border-radius: 5px; text-align: center; font-weight: bold; }}
+            @media print {{ body {{ padding: 0; }} }}
+        </style>
+    </head>
+    <body>
+        <h1>🎤 Vocal Coach Pro - Analysis Report</h1>
+        <p><strong>Target Style:</strong> {estilo.capitalize()}</p>
+        
+        <h2>1. Phonetic Scorecard</h2>
+        <p><strong>Text:</strong> {texto}</p>
+        <div class="ipa-box"><strong>IPA:</strong> {ipa_text}</div>
+        
+        <h2>2. Word-by-Word Stress Analysis</h2>
+        <ul>
+    """
+    for res in resultados:
+        if res['feedback']:
+            if "✅" in res['feedback']:
+                html += f'<li class="ok">{res["feedback"]}</li>'
+            else:
+                html += f'<li class="warn">{res["feedback"]}</li>'
+                
+    html += f"""
+        </ul>
+        <h2>3. Top Emotions Detected</h2>
+        <div class="emotion-grid">
+    """
+    # Mostrar el top 4 de emociones
+    for e, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:4]:
+        html += f'<div class="emotion-item">{e}<br>{v*100:.1f}%</div>'
+        
+    html += """
+        </div>
+        <p style="margin-top:40px; font-size:12px; color:#7f8c8d; text-align:center;">
+            Generado por English Vocal Coach Pro. (Presiona Ctrl+P o Cmd+P para guardar este reporte como PDF).
+        </p>
+    </body>
+    </html>
+    """
+    return html
 
 # ------------------------------------------------------------
 # Lógica de Análisis Fonético (IPA + Librosa)
@@ -192,7 +247,6 @@ if archivo_subido:
     _, extension = os.path.splitext(archivo_subido.name)
     if not extension: extension = ".wav"
     
-    # 1. SOLUCIÓN RAM/AUDIO: Leer bytes primero
     audio_bytes = archivo_subido.read()
     st.audio(audio_bytes, format=f"audio/{extension.replace('.', '')}")
     
@@ -207,7 +261,6 @@ if archivo_subido:
                 predictions = get_job_result(api_key, job_id)
                 scores = extract_emotion_scores(predictions)
                 
-                # 2. EXTRACCIÓN A PRUEBA DE BALAS
                 words_data = []
                 for item in predictions:
                     for pred in item.get("results", {}).get("predictions", []):
@@ -283,10 +336,23 @@ if archivo_subido:
                     fig = crear_radar_plotly(radar_data, estilo)
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
 
+                    # --- BOTÓN DE EXPORTACIÓN ---
+                    st.markdown("---")
+                    st.subheader("📥 Download Analysis")
+                    st.info("💡 **Tip:** Descarga el reporte HTML, ábrelo en tu navegador web y presiona **Ctrl + P** (o Comando + P) para guardarlo perfectamente formateado como PDF.")
+                    
+                    html_report = generar_reporte_html(full_text, ipa_text, results, scores, estilo)
+                    
+                    st.download_button(
+                        label="📄 Descargar Reporte Completo (HTML para PDF)",
+                        data=html_report,
+                        file_name="VocalCoach_Report.html",
+                        mime="text/html"
+                    )
+
             except Exception as e:
                 st.error(f"Error during analysis: {e}")
             finally:
-                # 3. LIMPIEZA DE RAM Y DISCO
                 if os.path.exists(audio_path): 
                     os.unlink(audio_path)
                 if 'audio_bytes' in locals():
