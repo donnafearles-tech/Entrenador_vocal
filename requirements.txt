@@ -6,6 +6,6 @@ requests
 plotly
 soundfile
 eng-to-ipa
-librosa
-numpy
+librosa>=0.10.0
 websockets
+assemblyai
