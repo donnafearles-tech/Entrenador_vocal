@@ -86,29 +86,35 @@ async def analyze_audio_with_evi(api_key, audio_path):
     emotion_scores_raw = {}
     
     try:
-        async with websockets.connect(uri) as websocket:
-            # 1. Leer y codificar el archivo de audio
+        # Añadimos un límite de tamaño más grande por si el audio dura varios segundos
+        async with websockets.connect(uri, max_size=10_000_000) as websocket:
+            
+            # 1. EL SALUDO: Esperar a que Hume confirme que está listo
+            try:
+                handshake = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                print(f"📞 [HUME] Conexión establecida. Estado inicial: {json.loads(handshake).get('type')}")
+            except asyncio.TimeoutError:
+                print("⚠️ [HUME] El servidor tardó en saludar, pero enviaremos el audio de todas formas.")
+
+            # 2. ENVIAR AUDIO: Todo en un solo paquete, sin romper los metadatos WAV
             with open(audio_path, "rb") as audio_file:
                 audio_bytes = audio_file.read()
             
             base64_audio = base64.b64encode(audio_bytes).decode("utf-8")
             
-            # 2. Enviar el paquete de audio a EVI
-            audio_msg = {
+            await websocket.send(json.dumps({
                 "type": "audio_input",
                 "data": base64_audio
-            }
-            await websocket.send(json.dumps(audio_msg))
+            }))
+            print("🚀 [HUME] Audio enviado exitosamente. Esperando análisis...")
             
-            # 3. Escuchar las respuestas del WSS
+            # 3. ESCUCHAR RESPUESTA
             while True:
                 try:
-                    # 🚀 CAMBIO 1: Aumentamos el timeout a 30 segundos
                     response = await asyncio.wait_for(websocket.recv(), timeout=30.0)
                     data = json.loads(response)
                     
-                    # 🚀 CAMBIO 2: Imprimir en la consola el tipo de evento para depurar
-                    print(f"[HUME EVI EVENT] Recibido evento de tipo: {data.get('type')}")
+                    print(f"📥 [HUME EVI EVENT] {data.get('type')}")
                     
                     if data.get("type") == "user_message":
                         message = data.get("message", {})
@@ -120,18 +126,20 @@ async def analyze_audio_with_evi(api_key, audio_path):
                         
                         if scores:
                             emotion_scores_raw = scores
-                            break # Tenemos lo que necesitamos, salimos
+                            break # ¡Éxito! Salimos del bucle
                             
                     elif data.get("type") == "error":
-                        # Si Hume tira un error interno, lo mostramos
-                        raise Exception(data.get("message", "Error desconocido en EVI"))
+                        raise Exception(data.get("message", "Error interno reportado por EVI"))
                         
                 except asyncio.TimeoutError:
-                    print("[HUME EVI TIMEOUT] Se agotaron los 30 segundos esperando a EVI.")
+                    print("⏳ [HUME EVI TIMEOUT] EVI no respondió a tiempo.")
                     break 
                     
+    except websockets.exceptions.ConnectionClosedError as e:
+        # Esto capturará la verdadera razón por la que Hume nos cuelga
+        raise Exception(f"Hume cerró la conexión abruptamente. Código: {e.code}, Razón: {e.reason}")
     except Exception as e:
-        raise Exception(f"Fallo en la conexión WebSocket: {str(e)}")
+        raise Exception(f"Fallo en el WebSocket: {str(e)}")
         
     return transcribed_text, emotion_scores_raw
 
