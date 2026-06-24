@@ -87,7 +87,7 @@ async def analyze_audio_with_evi(api_key, audio_path):
     
     try:
         async with websockets.connect(uri) as websocket:
-            # 1. Leer y codificar el archivo de audio en Base64
+            # 1. Leer y codificar el archivo de audio
             with open(audio_path, "rb") as audio_file:
                 audio_bytes = audio_file.read()
             
@@ -103,45 +103,37 @@ async def analyze_audio_with_evi(api_key, audio_path):
             # 3. Escuchar las respuestas del WSS
             while True:
                 try:
-                    response = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+                    # 🚀 CAMBIO 1: Aumentamos el timeout a 30 segundos
+                    response = await asyncio.wait_for(websocket.recv(), timeout=30.0)
                     data = json.loads(response)
                     
-                    # EVI devuelve un 'user_message' cuando termina de procesar nuestra voz
+                    # 🚀 CAMBIO 2: Imprimir en la consola el tipo de evento para depurar
+                    print(f"[HUME EVI EVENT] Recibido evento de tipo: {data.get('type')}")
+                    
                     if data.get("type") == "user_message":
                         message = data.get("message", {})
                         transcribed_text = message.get("content", "")
                         
-                        # Extraer la prosodia del mensaje del usuario
                         models = data.get("models", {})
                         prosody = models.get("prosody", {})
                         scores = prosody.get("scores", {})
                         
                         if scores:
                             emotion_scores_raw = scores
-                            break # Tenemos lo que necesitamos, salimos del loop
+                            break # Tenemos lo que necesitamos, salimos
                             
                     elif data.get("type") == "error":
+                        # Si Hume tira un error interno, lo mostramos
                         raise Exception(data.get("message", "Error desconocido en EVI"))
                         
                 except asyncio.TimeoutError:
-                    break # Salimos si EVI no responde en 10 segundos
+                    print("[HUME EVI TIMEOUT] Se agotaron los 30 segundos esperando a EVI.")
+                    break 
                     
     except Exception as e:
         raise Exception(f"Fallo en la conexión WebSocket: {str(e)}")
         
     return transcribed_text, emotion_scores_raw
-
-def process_evi_scores(raw_scores):
-    if not raw_scores:
-        return {}
-        
-    mapped_scores = {}
-    for eng_name, score in raw_scores.items():
-        esp_name = TRADUCCION_EMOCIONES.get(eng_name, eng_name)
-        mapped_scores[esp_name] = score
-        
-    mapped_scores["Confidence"] = calcular_confianza_artificial(mapped_scores)
-    return mapped_scores
 
 # ------------------------------------------------------------
 # Análisis Fonético y Gráficos
