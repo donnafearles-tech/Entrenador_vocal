@@ -1,10 +1,11 @@
-# app.py - English Vocal Coach Pro
+# app.py - English Vocal Coach Pro (Hume EVI WebSockets)
 import streamlit as st
 import os
-import requests
-import time
 import json
 import tempfile
+import base64
+import asyncio
+import websockets
 import plotly.graph_objects as go
 import eng_to_ipa as ipa
 import librosa
@@ -15,11 +16,10 @@ import gc
 # Configuración de la página
 # ------------------------------------------------------------
 st.set_page_config(page_title="English Vocal Coach Pro", page_icon="🎤", layout="wide")
-st.title("🎤 English Vocal Coach Pro")
+st.title("🎤 English Vocal Coach Pro (Live EVI)")
 st.markdown("""
-Analiza tu pronunciación y tono en inglés. 
-Esta herramienta compara tu **énfasis físico (energía)** con el **estándar fonético (IPA)**, 
-y te recomienda **qué palabras enfatizar** para sonar más persuasivo/a, directo/a o experto/a.
+Analiza tu pronunciación y tono en inglés conectándote en vivo con **Hume EVI**. 
+Esta herramienta compara tu **énfasis físico (energía)** con el **estándar fonético (IPA)**.
 """)
 
 # ------------------------------------------------------------
@@ -32,7 +32,7 @@ TRADUCCION_EMOCIONES = {
     "Contentment": "Contentment", "Determination": "Determination", "Doubt": "Doubt",
     "Excitement": "Excitement", "Fear": "Fear", "Interest": "Interest", "Joy": "Joy",
     "Pride": "Pride", "Sadness": "Sadness", "Surprise (positive)": "Surprise (+)",
-    "Tiredness": "Tiredness", "Triumph": "Triumph"
+    "Tiredness": "Tiredness", "Triumph": "Triumph", "Confidence": "Confidence"
 }
 
 IDEAL_PROFILES = {
@@ -64,37 +64,11 @@ except Exception:
     api_key = os.getenv("HUME_API_KEY", "")
 
 if not api_key:
-    st.error("🔑 API Key de Hume no encontrada. Configúrala en .env o Streamlit Secrets.")
+    st.error("🔑 API Key de Hume no encontrada. Configúrala en .env.")
     st.stop()
 
 # ------------------------------------------------------------
-# Funciones de API de Hume
-# ------------------------------------------------------------
-HUME_BASE_URL = "https://api.hume.ai/v0/batch/jobs"
-
-def start_job(api_key, file_path):
-    headers = {"X-Hume-Api-Key": api_key}
-    with open(file_path, "rb") as f:
-        files = {"file": f}
-        json_payload = json.dumps({"models": {"prosody": {}, "language": {}}})
-        response = requests.post(HUME_BASE_URL, files=files, data={"json": json_payload}, headers=headers)
-    if response.status_code == 200:
-        return response.json()["job_id"]
-    raise Exception(f"Error {response.status_code}: {response.text}")
-
-def get_job_result(api_key, job_id):
-    headers = {"X-Hume-Api-Key": api_key}
-    while True:
-        res = requests.get(f"{HUME_BASE_URL}/{job_id}", headers=headers).json()
-        status = (res.get("state") or res.get("status") or {}).get("status", "").lower()
-        if status == "completed":
-            return requests.get(f"{HUME_BASE_URL}/{job_id}/predictions", headers=headers).json()
-        if status in ("failed", "cancelled"):
-            raise Exception("El análisis de Hume falló.")
-        time.sleep(2)
-
-# ------------------------------------------------------------
-# Funciones de Análisis, Gráficos y Reportes
+# Funciones Asíncronas para Hume EVI (WebSockets)
 # ------------------------------------------------------------
 def calcular_confianza_artificial(scores):
     determinacion = scores.get("Determination", 0.0)
@@ -105,34 +79,86 @@ def calcular_confianza_artificial(scores):
     confianza = (determinacion * 0.4) + (calma * 0.3) + (entusiasmo * 0.2) - (ansiedad * 0.5) - (duda * 0.5)
     return max(0.0, min(1.0, confianza))
 
-def extract_emotion_scores(predictions_payload):
-    emotion_totals = {}
-    segment_count = 0
-    for item in predictions_payload:
-        for pred in item.get("results", {}).get("predictions", []):
-            for group in pred.get("models", {}).get("prosody", {}).get("grouped_predictions", []):
-                for segment in group.get("predictions", []):
-                    segment_count += 1
-                    for emo in segment.get("emotions", []):
-                        eng_name = emo.get("name", "")
-                        esp_name = TRADUCCION_EMOCIONES.get(eng_name, eng_name)
-                        score = emo.get("score", 0.0)
-                        emotion_totals[esp_name] = emotion_totals.get(esp_name, 0.0) + score
-    if segment_count == 0: return {}
-    promedios = {name: total / segment_count for name, total in emotion_totals.items()}
-    promedios["Confidence"] = calcular_confianza_artificial(promedios)
-    return promedios
+async def analyze_audio_with_evi(api_key, audio_path):
+    uri = f"wss://api.hume.ai/v0/evi/chat?api_key={api_key}"
+    
+    transcribed_text = ""
+    emotion_scores_raw = {}
+    
+    try:
+        async with websockets.connect(uri) as websocket:
+            # 1. Leer y codificar el archivo de audio en Base64
+            with open(audio_path, "rb") as audio_file:
+                audio_bytes = audio_file.read()
+            
+            base64_audio = base64.b64encode(audio_bytes).decode("utf-8")
+            
+            # 2. Enviar el paquete de audio a EVI
+            audio_msg = {
+                "type": "audio_input",
+                "data": base64_audio
+            }
+            await websocket.send(json.dumps(audio_msg))
+            
+            # 3. Escuchar las respuestas del WSS
+            while True:
+                try:
+                    response = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+                    data = json.loads(response)
+                    
+                    # EVI devuelve un 'user_message' cuando termina de procesar nuestra voz
+                    if data.get("type") == "user_message":
+                        message = data.get("message", {})
+                        transcribed_text = message.get("content", "")
+                        
+                        # Extraer la prosodia del mensaje del usuario
+                        models = data.get("models", {})
+                        prosody = models.get("prosody", {})
+                        scores = prosody.get("scores", {})
+                        
+                        if scores:
+                            emotion_scores_raw = scores
+                            break # Tenemos lo que necesitamos, salimos del loop
+                            
+                    elif data.get("type") == "error":
+                        raise Exception(data.get("message", "Error desconocido en EVI"))
+                        
+                except asyncio.TimeoutError:
+                    break # Salimos si EVI no responde en 10 segundos
+                    
+    except Exception as e:
+        raise Exception(f"Fallo en la conexión WebSocket: {str(e)}")
+        
+    return transcribed_text, emotion_scores_raw
 
+def process_evi_scores(raw_scores):
+    if not raw_scores:
+        return {}
+        
+    mapped_scores = {}
+    for eng_name, score in raw_scores.items():
+        esp_name = TRADUCCION_EMOCIONES.get(eng_name, eng_name)
+        mapped_scores[esp_name] = score
+        
+    mapped_scores["Confidence"] = calcular_confianza_artificial(mapped_scores)
+    return mapped_scores
+
+# ------------------------------------------------------------
+# Análisis Fonético y Gráficos
+# ------------------------------------------------------------
 def crear_radar_plotly(radar_data, estilo):
     etiquetas = list(radar_data.keys())
     actuales = [v["actual"] * 100 for v in radar_data.values()]
     objetivos = [v["target"] * 100 for v in radar_data.values()]
+    
     etiquetas.append(etiquetas[0])
     actuales.append(actuales[0])
     objetivos.append(objetivos[0])
+    
     fig = go.Figure()
     fig.add_trace(go.Scatterpolar(r=actuales, theta=etiquetas, fill='toself', name='Your Voice', line_color='#1f77b4'))
     fig.add_trace(go.Scatterpolar(r=objetivos, theta=etiquetas, fill='toself', name=f'Target: {estilo.capitalize()}', line_color='#ff7f0e'))
+    
     fig.update_layout(
         polar=dict(radialaxis=dict(visible=True, range=[0, 100], ticksuffix="%")),
         showlegend=True,
@@ -141,129 +167,6 @@ def crear_radar_plotly(radar_data, estilo):
     )
     return fig
 
-# ------------------------------------------------------------
-# NUEVA FUNCIÓN: Consejos de énfasis persuasivo según estilo
-# ------------------------------------------------------------
-def generar_consejos_enfasis(words_data, scores, estilo):
-    """
-    Recomienda qué palabras enfatizar y qué ajustes prosódicos hacer
-    para acercarse al perfil emocional del estilo elegido.
-    """
-    consejos = []
-    
-    # Palabras clave típicas para cada estilo (ampliables)
-    palabras_enfasis = {
-        "persuasive": ["trust", "believe", "guarantee", "absolutely", "certainly",
-                       "you", "we", "together", "result", "success", "proven", "best", "value"],
-        "direct":     ["must", "will", "now", "immediately", "critical", "essential",
-                       "stop", "go", "do", "don't", "exactly", "fact"],
-        "expert":     ["clearly", "therefore", "consequently", "analysis", "data",
-                       "evidence", "research", "conclusion", "principle", "fundamental"]
-    }
-    
-    # 1. Recomendar palabras específicas del estilo que aparecen en el audio
-    palabras_detectadas = [w['word'].lower().strip(".,!?") for w in words_data]
-    for palabra in palabras_enfasis.get(estilo, []):
-        if palabra in palabras_detectadas:
-            consejos.append(f"🔊 **Enfatiza la palabra '{palabra}'** – dale más volumen y un tono ligeramente más agudo.")
-    
-    # 2. Consejos basados en emociones (comparando con el perfil ideal)
-    ideal = IDEAL_PROFILES[estilo]
-    actual = scores
-    
-    # Confianza baja
-    if actual.get("Confidence", 0) < ideal.get("Confidence", 0.8) - 0.1:
-        consejos.append("📉 **Confianza baja**: evita el 'uptalk' (tono ascendente al final). Termina las frases con tono descendente y haz pausas cortas.")
-    
-    # Falta de determinación
-    if actual.get("Determination", 0) < ideal.get("Determination", 0.7) - 0.15:
-        consejos.append("💪 **Determinación insuficiente**: alarga ligeramente las vocales en palabras clave (ej. 'absoluuutamente') y sube el volumen en la última sílaba.")
-    
-    # Excitación baja (voz monótona)
-    if actual.get("Excitement", 0) < ideal.get("Excitement", 0.5) - 0.15:
-        consejos.append("⚡ **Voz plana**: varía el pitch. Sube el tono en las palabras positivas (ej. 'great', 'success') y bájalo en las negativas.")
-    
-    # Ansiedad o duda alta
-    if actual.get("Anxiety", 0) > ideal.get("Anxiety", 0.1) + 0.1:
-        consejos.append("😟 **Nerviosismo detectado**: respira profundamente antes de empezar. Practica con pausas de 1 segundo entre ideas.")
-    if actual.get("Doubt", 0) > ideal.get("Doubt", 0.05) + 0.1:
-        consejos.append("🤔 **Tono dubitativo**: elimina muletillas ('eh', 'um'). Enfatiza las palabras afirmativas ('yes', 'exact', 'correct').")
-    
-    # Si no hay consejos específicos, dar uno genérico
-    if not consejos:
-        consejos.append("✅ ¡Buen trabajo! Para mejorar aún más, practica enfatizando una palabra por frase (la más importante).")
-    
-    return consejos
-
-# ------------------------------------------------------------
-# Función para generar reporte HTML (incluye nuevos consejos)
-# ------------------------------------------------------------
-def generar_reporte_html(texto, ipa_text, resultados, scores, estilo, consejos):
-    html = f"""
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <style>
-            body {{ font-family: 'Segoe UI', Arial, sans-serif; padding: 30px; line-height: 1.6; color: #333; }}
-            h1 {{ color: #2C3E50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
-            h2 {{ color: #2980b9; margin-top: 30px; }}
-            .ipa-box {{ background-color: #f8f9fa; padding: 15px; border-left: 5px solid #3498db; font-family: monospace; font-size: 16px; margin: 10px 0; }}
-            .ok {{ color: #27ae60; margin-bottom: 8px; }}
-            .warn {{ color: #e67e22; margin-bottom: 8px; }}
-            .emotion-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; max-width: 400px; }}
-            .emotion-item {{ background: #ecf0f1; padding: 10px; border-radius: 5px; text-align: center; font-weight: bold; }}
-            @media print {{ body {{ padding: 0; }} }}
-        </style>
-    </head>
-    <body>
-        <h1>🎤 Vocal Coach Pro - Analysis Report</h1>
-        <p><strong>Target Style:</strong> {estilo.capitalize()}</p>
-        
-        <h2>1. Emphasis Recommendations</h2>
-        <ul>
-    """
-    for tip in consejos:
-        html += f"<li>{tip}</li>"
-    
-    html += f"""
-        </ul>
-        
-        <h2>2. Phonetic Scorecard</h2>
-        <p><strong>Text:</strong> {texto}</p>
-        <div class="ipa-box"><strong>IPA:</strong> {ipa_text}</div>
-        
-        <h2>3. Word-by-Word Stress Analysis</h2>
-        <ul>
-    """
-    for res in resultados:
-        if res['feedback']:
-            if "✅" in res['feedback']:
-                html += f'<li class="ok">{res["feedback"]}</li>'
-            else:
-                html += f'<li class="warn">{res["feedback"]}</li>'
-                
-    html += f"""
-        </ul>
-        <h2>4. Top Emotions Detected</h2>
-        <div class="emotion-grid">
-    """
-    # Mostrar el top 4 de emociones
-    for e, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:4]:
-        html += f'<div class="emotion-item">{e}<br>{v*100:.1f}%</div>'
-        
-    html += """
-        </div>
-        <p style="margin-top:40px; font-size:12px; color:#7f8c8d; text-align:center;">
-            Generado por English Vocal Coach Pro. (Presiona Ctrl+P o Cmd+P para guardar este reporte como PDF).
-        </p>
-    </body>
-    </html>
-    """
-    return html
-
-# ------------------------------------------------------------
-# Lógica de Análisis Fonético (IPA + Librosa)
-# ------------------------------------------------------------
 def get_ipa_info(word):
     clean_word = word.strip(".,;:!?")
     ipa_str = ipa.convert(clean_word, keep_punct=False)
@@ -274,20 +177,22 @@ def get_ipa_info(word):
         stressed_pos = sum(1 for c in prefix if c in vowels) + 1
     return ipa_str, stressed_pos
 
-def analyze_stress(audio_path, words_data):
+def analyze_stress(audio_path, full_text):
+    # Ya no tenemos timestamps exactos por palabra desde EVI de forma nativa sin procesamiento pesado,
+    # así que aproximamos el análisis dividiendo el audio total
     y, sr = librosa.load(audio_path, sr=22050)
     rms = librosa.feature.rms(y=y)[0]
-    times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
     
+    words = full_text.split()
+    if not words: return []
+    
+    chunk_size = len(rms) // len(words)
     results = []
-    for wd in words_data:
-        word, start, end = wd['word'], wd['start'], wd['end']
+    
+    for i, word in enumerate(words):
         ipa_str, ideal_stress = get_ipa_info(word)
+        segment_rms = rms[i*chunk_size : (i+1)*chunk_size]
         
-        mask = (times >= start) & (times <= end)
-        if not np.any(mask): continue
-        
-        segment_rms = rms[mask]
         num_syllables = max(1, sum(1 for c in ipa_str if c in "iɪeɛæɑɔoʊuʌəɚɝaɐ"))
         parts = np.array_split(segment_rms, num_syllables)
         actual_stress = np.argmax([np.mean(p) for p in parts]) + 1
@@ -301,6 +206,23 @@ def analyze_stress(audio_path, words_data):
         
         results.append({"word": word, "feedback": feedback})
     return results
+
+def generar_consejos_enfasis(scores, estilo):
+    consejos = []
+    ideal = IDEAL_PROFILES[estilo]
+    
+    if scores.get("Confidence", 0) < ideal.get("Confidence", 0.8) - 0.1:
+        consejos.append("📉 **Confianza baja**: evita el 'uptalk' (tono ascendente al final). Termina las frases con tono descendente.")
+    if scores.get("Determination", 0) < ideal.get("Determination", 0.7) - 0.15:
+        consejos.append("💪 **Determinación insuficiente**: alarga ligeramente las vocales en palabras clave y sube el volumen.")
+    if scores.get("Excitement", 0) < ideal.get("Excitement", 0.5) - 0.15:
+        consejos.append("⚡ **Voz plana**: varía el pitch. Sube el tono en las palabras importantes.")
+    if scores.get("Anxiety", 0) > ideal.get("Anxiety", 0.1) + 0.1:
+        consejos.append("😟 **Nerviosismo detectado**: respira profundamente antes de empezar.")
+        
+    if not consejos:
+        consejos.append("✅ ¡Buen trabajo! El análisis en tiempo real muestra que estás alineada con el perfil ideal.")
+    return consejos
 
 # ------------------------------------------------------------
 # UI Streamlit
@@ -320,69 +242,44 @@ if archivo_subido:
         tmp.write(audio_bytes)
         audio_path = tmp.name
 
-    if st.button("Start Pro Analysis"):
-        with st.spinner("Analyzing audio and phonetics..."):
+    if st.button("Start Live EVI Analysis"):
+        with st.spinner("Conectando con Hume EVI a través de WebSockets..."):
             try:
-                job_id = start_job(api_key, audio_path)
-                predictions = get_job_result(api_key, job_id)
-                scores = extract_emotion_scores(predictions)
+                # 🚀 Ejecutar la función asíncrona dentro del bucle de eventos sincrónico de Streamlit
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                transcripcion, raw_scores = loop.run_until_complete(analyze_audio_with_evi(api_key, audio_path))
                 
-                words_data = []
-                for item in predictions:
-                    for pred in item.get("results", {}).get("predictions", []):
-                        models = pred.get("models", {})
-                        for model_name in ["prosody", "language"]:
-                            encontro_texto = False
-                            for group in models.get(model_name, {}).get("grouped_predictions", []):
-                                for seg in group.get("predictions", []):
-                                    if "words" in seg and isinstance(seg["words"], list) and len(seg["words"]) > 0:
-                                        for w in seg["words"]:
-                                            inicio = w.get('begin', w.get('start', 0))
-                                            fin = w.get('end', 0)
-                                            words_data.append({'word': w.get('word',''), 'start': inicio, 'end': fin})
-                                        encontro_texto = True
-                                    elif "text" in seg and seg["text"].strip():
-                                        text = seg["text"].strip()
-                                        tiempo = seg.get("time", {})
-                                        inicio = tiempo.get("begin", tiempo.get("start", 0))
-                                        fin = tiempo.get("end", 0)
-                                        words = text.split()
-                                        if words:
-                                            duracion_por_palabra = (fin - inicio) / len(words)
-                                            for i, w in enumerate(words):
-                                                words_data.append({'word': w, 'start': inicio + (i * duracion_por_palabra), 'end': inicio + ((i + 1) * duracion_por_palabra)})
-                                        encontro_texto = True
-                            if encontro_texto: break
-
-                if not words_data:
-                    st.warning("⚠️ Hume AI processed the audio, but detected no speech. Is it too noisy or silent?")
+                if not raw_scores:
+                    st.error("⚠️ El socket se cerró sin devolver métricas de prosodia. Verifica el audio.")
                 else:
-                    # ---- NUEVA SECCIÓN: Consejos de énfasis ----
+                    st.success("✅ Análisis EVI completado")
+                    scores = process_evi_scores(raw_scores)
+                    
+                    # Consejos
                     st.markdown("---")
-                    st.subheader("🎯 Emphasis Tips for Your Style")
-                    consejos = generar_consejos_enfasis(words_data, scores, estilo)
+                    st.subheader("🎯 Live Emphasis Tips")
+                    consejos = generar_consejos_enfasis(scores, estilo)
                     for tip in consejos:
                         st.info(tip)
                     
-                    # Resultados de Transcripción e IPA
+                    # IPA
                     st.markdown("---")
                     st.subheader("🎼 Phonetic Scorecard (IPA)")
-                    full_text = " ".join([w['word'] for w in words_data])
-                    ipa_text = ipa.convert(full_text)
-                    st.markdown(f"**Text:** {full_text}")
+                    ipa_text = ipa.convert(transcripcion)
+                    st.markdown(f"**Text:** {transcripcion}")
                     st.info(f"**IPA:** {ipa_text}")
 
-                    # Resultados de Acento
+                    # Acento y Librosa
                     st.markdown("---")
-                    st.subheader("🔍 Word-by-Word Stress Analysis")
-                    results = analyze_stress(audio_path, words_data)
+                    st.subheader("🔍 Estimated Stress Analysis")
+                    results = analyze_stress(audio_path, transcripcion)
                     for res in results:
                         if res['feedback']:
                             if "✅" in res['feedback']: st.success(res['feedback'])
                             else: st.warning(res['feedback'])
 
-                # Kanban de Emociones
-                if scores:
+                    # Kanban
                     st.markdown("---")
                     st.subheader("📋 Emotional Intensity Board")
                     sorted_emotions = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -410,22 +307,8 @@ if archivo_subido:
                     fig = crear_radar_plotly(radar_data, estilo)
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
 
-                    # --- BOTÓN DE EXPORTACIÓN (incluye los consejos) ---
-                    st.markdown("---")
-                    st.subheader("📥 Download Analysis")
-                    st.info("💡 **Tip:** Descarga el reporte HTML, ábrelo en tu navegador web y presiona **Ctrl + P** (o Comando + P) para guardarlo perfectamente formateado como PDF.")
-                    
-                    html_report = generar_reporte_html(full_text, ipa_text, results, scores, estilo, consejos)
-                    
-                    st.download_button(
-                        label="📄 Descargar Reporte Completo (HTML para PDF)",
-                        data=html_report,
-                        file_name="VocalCoach_Report.html",
-                        mime="text/html"
-                    )
-
             except Exception as e:
-                st.error(f"Error during analysis: {e}")
+                st.error(f"Error during EVI WSS analysis: {e}")
             finally:
                 if os.path.exists(audio_path): 
                     os.unlink(audio_path)
