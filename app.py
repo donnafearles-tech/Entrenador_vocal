@@ -229,14 +229,30 @@ def generar_consejos_enfasis(scores, estilo):
 # ------------------------------------------------------------
 st.sidebar.header("Settings")
 estilo = st.sidebar.selectbox("Target Style", ("persuasive", "direct", "expert"))
-archivo_subido = st.file_uploader("Upload English Audio (WAV/MP3)", type=["wav", "mp3"])
 
-if archivo_subido:
-    _, extension = os.path.splitext(archivo_subido.name)
+# --- NUEVO: Selección del método de entrada ---
+metodo_entrada = st.sidebar.radio("Input Method", ["Microphone (Live)", "Upload File"])
+
+archivo_audio = None
+
+if metodo_entrada == "Microphone (Live)":
+    # Componente nativo de Streamlit para grabar desde el navegador
+    archivo_audio = st.audio_input("🎤 Record your voice in English")
+else:
+    archivo_audio = st.file_uploader("Upload English Audio (WAV/MP3)", type=["wav", "mp3"])
+
+# --- Lógica principal de procesamiento ---
+if archivo_audio:
+    # Obtener extensión de forma segura dependiendo del método de entrada
+    nombre_archivo = getattr(archivo_audio, 'name', 'grabacion.wav')
+    _, extension = os.path.splitext(nombre_archivo)
     if not extension: extension = ".wav"
     
-    audio_bytes = archivo_subido.read()
-    st.audio(audio_bytes, format=f"audio/{extension.replace('.', '')}")
+    audio_bytes = archivo_audio.read()
+    
+    # st.audio_input ya muestra un reproductor, solo lo mostramos extra si es archivo subido
+    if metodo_entrada == "Upload File":
+        st.audio(audio_bytes, format=f"audio/{extension.replace('.', '')}")
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as tmp:
         tmp.write(audio_bytes)
@@ -248,6 +264,7 @@ if archivo_subido:
                 # 🚀 Ejecutar la función asíncrona dentro del bucle de eventos sincrónico de Streamlit
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                # Tu función actual que hace el llamado a wss://api.hume.ai/v0/evi/chat
                 transcripcion, raw_scores = loop.run_until_complete(analyze_audio_with_evi(api_key, audio_path))
                 
                 if not raw_scores:
@@ -314,4 +331,5 @@ if archivo_subido:
                     os.unlink(audio_path)
                 if 'audio_bytes' in locals():
                     del audio_bytes
+                import gc
                 gc.collect()
