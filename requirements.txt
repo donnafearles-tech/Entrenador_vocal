@@ -9,4 +9,3 @@ eng-to-ipa
 librosa>=0.10.0
 websockets
 assemblyai
-upgrade
