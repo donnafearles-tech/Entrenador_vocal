@@ -8,3 +8,4 @@ soundfile
 eng-to-ipa
 librosa
 numpy
+websockets
