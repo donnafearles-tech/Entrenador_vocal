@@ -9,3 +9,5 @@ eng-to-ipa
 librosa>=0.10.0
 websockets
 assemblyai
+numba==0.56.4
+llvmlite==0.39.1
